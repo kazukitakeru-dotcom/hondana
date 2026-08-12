@@ -16,7 +16,13 @@ iPhone のホーム画面に追加して使う。classic script なので `impor
 
 ## データ（IndexedDB `hondana-db` v1）
 
-- `books` … 本のレコード。`status` は `'unread' | 'reading' | 'done'`
+- `books` … 本のレコード。`status` は `'wishlist' | 'unread' | 'reading' | 'done'`
+  - `'wishlist'`（欲しいリスト＝まだ持っていない本）のときは `bookmarkFieldGroup` / `ratingFieldGroup` を
+    編集画面で隠し、保存時にも `bookmarkPage` / `totalPages` / `rating` を強制的に空にする
+    （`updateFieldVisibilityForStatus()`、`saveBookBtn` ハンドラの `isWishlist` 分岐）。
+    カードは `.book-cover-wrap.wishlist`（破線枠）と `🛒 欲しい` バッジで区別する
+  - `updateShelfStats()` の「全N冊」には `wishlist` を含めない（所有冊数ではないため）。
+    1冊以上あるときだけ「・🛒 欲しい N冊」を末尾に足す
   - `bookmarkPage` が「電子栞」＝今どこまで読んだか。`totalPages` と合わせて進捗％を出す
   - **状態（読了など）を変える手段は編集画面の状態セレクタだけ。** カード一覧にはワンタップの
     チェックボタンを置いていない。以前置いていたが、「そんなにパッパと読み終えるものでもないし、

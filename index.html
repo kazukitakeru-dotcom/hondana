@@ -38,8 +38,9 @@
     <!-- Filter pills -->
     <div class="filter-row" id="statusFilter">
       <button class="filter-pill active" data-filter="all">すべて</button>
-      <button class="filter-pill" data-filter="reading">読書中</button>
+      <button class="filter-pill" data-filter="wishlist">🛒 欲しいリスト</button>
       <button class="filter-pill" data-filter="unread">未読</button>
+      <button class="filter-pill" data-filter="reading">読書中</button>
       <button class="filter-pill" data-filter="done">読了</button>
       <button class="filter-pill" data-filter="favorite">★ お気に入り</button>
     </div>
@@ -129,10 +130,12 @@
     <div class="form-group">
       <label class="form-label">状態</label>
       <div class="status-selector" id="bookStatusSelector">
+        <button class="status-btn" data-value="wishlist">🛒 欲しい</button>
         <button class="status-btn" data-value="unread">未読</button>
         <button class="status-btn" data-value="reading">読書中</button>
         <button class="status-btn" data-value="done">読了</button>
       </div>
+      <p class="form-hint">「欲しいリスト」はまだ持っていない、これから買いたい本。買ったら「未読」に変えます。</p>
     </div>
 
     <div class="form-group">
@@ -145,7 +148,7 @@
       </label>
     </div>
 
-    <div class="form-group">
+    <div class="form-group" id="bookmarkFieldGroup">
       <label class="form-label">電子栞（読んだところ）</label>
       <div class="page-input-row">
         <div class="page-input-col">
@@ -161,7 +164,7 @@
       <p class="form-hint" id="bookProgressHint"></p>
     </div>
 
-    <div class="form-group">
+    <div class="form-group" id="ratingFieldGroup">
       <label class="form-label">評価</label>
       <div class="rating-selector" id="bookRatingSelector">
         <button class="rating-star" data-value="1">★</button>

@@ -388,9 +388,12 @@ const SHELF_COLS = 3;
 function updateShelfStats() {
   const el = document.getElementById('shelfStats');
   if (!el) return;
-  const total = books.length;
-  const done = books.filter((b) => b.status === 'done').length;
-  el.textContent = total ? `📚 全 ${total}冊 ・ 読了 ${done}冊` : '';
+  // 「欲しいリスト」はまだ持っていない本なので、所有冊数のカウントには含めない
+  const owned = books.filter((b) => b.status !== 'wishlist');
+  const done = owned.filter((b) => b.status === 'done').length;
+  const wishlist = books.length - owned.length;
+  if (!books.length) { el.textContent = ''; return; }
+  el.textContent = `📚 全 ${owned.length}冊 ・ 読了 ${done}冊` + (wishlist ? ` ・ 🛒 欲しい ${wishlist}冊` : '');
 }
 
 function renderBooks() {
@@ -407,7 +410,8 @@ function renderBooks() {
   let list = books.filter((b) => {
     if (showArrows) return true; // 編集中は絞り込みを無視して全冊を対象にする
     let matchFilter = true;
-    if (currentFilter === 'reading') matchFilter = b.status === 'reading';
+    if (currentFilter === 'wishlist') matchFilter = b.status === 'wishlist';
+    else if (currentFilter === 'reading') matchFilter = b.status === 'reading';
     else if (currentFilter === 'unread') matchFilter = b.status === 'unread';
     else if (currentFilter === 'done') matchFilter = b.status === 'done';
     else if (currentFilter === 'favorite') matchFilter = !!b.favorite;
@@ -461,7 +465,7 @@ function renderBookCard(b, showArrows) {
     : '';
 
   return `<div class="book-card" data-id="${b.id}">
-    <div class="book-cover-wrap">
+    <div class="book-cover-wrap ${b.status === 'wishlist' ? 'wishlist' : ''}">
       <div class="book-cover">
         ${b.cover ? `<img src="${b.cover}" alt="${escHtml(b.title)}" loading="lazy">` : bookIcon()}
       </div>
@@ -473,6 +477,7 @@ function renderBookCard(b, showArrows) {
     ${b.author ? `<div class="book-author">${escHtml(b.author)}</div>` : ''}
     ${b.status === 'reading' && b.bookmarkPage ? `<div class="book-status-tag">🔖 ${b.bookmarkPage}${b.totalPages ? ' / ' + b.totalPages : ''}p</div>` : ''}
     ${b.status === 'done' ? `<div class="book-status-tag done">✓ 読了</div>` : ''}
+    ${b.status === 'wishlist' ? `<div class="book-status-tag wishlist">🛒 欲しい</div>` : ''}
     ${tagsHtml}
   </div>`;
 }
@@ -531,6 +536,7 @@ function openBookModal(id) {
   document.querySelectorAll('#bookStatusSelector .status-btn').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.value === status);
   });
+  updateFieldVisibilityForStatus(status);
 
   const rating = (b && b.rating) || 0;
   document.querySelectorAll('#bookRatingSelector .rating-star').forEach((btn) => {
@@ -552,13 +558,21 @@ function openBookModal(id) {
   setTimeout(() => document.getElementById('bookTitleInput').focus(), 300);
 }
 
-// 状態ボタン（未読／読書中／読了）
+// 状態ボタン（欲しい／未読／読書中／読了）
 document.querySelectorAll('#bookStatusSelector .status-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('#bookStatusSelector .status-btn').forEach((b) => b.classList.remove('active'));
     btn.classList.add('active');
+    updateFieldVisibilityForStatus(btn.dataset.value);
   });
 });
+
+// 「欲しい（まだ持っていない）」本には、電子栞や評価は意味を持たないので隠す
+function updateFieldVisibilityForStatus(status) {
+  const isWishlist = status === 'wishlist';
+  document.getElementById('bookmarkFieldGroup').classList.toggle('hidden', isWishlist);
+  document.getElementById('ratingFieldGroup').classList.toggle('hidden', isWishlist);
+}
 
 // 評価の★（今と同じ★をもう一度押すと0に戻す）
 document.querySelectorAll('#bookRatingSelector .rating-star').forEach((btn) => {
@@ -720,11 +734,13 @@ document.getElementById('saveBookBtn').addEventListener('click', async () => {
   const author = document.getElementById('bookAuthorInput').value.trim();
   const memo = document.getElementById('bookMemoInput').value.trim();
   const favorite = document.getElementById('bookFavoriteInput').checked;
-  const bookmarkPage = parseInt(document.getElementById('bookBookmarkInput').value, 10) || 0;
-  const totalPages = parseInt(document.getElementById('bookTotalPagesInput').value, 10) || 0;
   const statusBtn = document.querySelector('#bookStatusSelector .status-btn.active');
   const status = statusBtn ? statusBtn.dataset.value : 'unread';
-  const rating = document.querySelectorAll('#bookRatingSelector .rating-star.active').length;
+  // 「欲しい」はまだ持っていない本なので、電子栞や評価は持たせない
+  const isWishlist = status === 'wishlist';
+  const bookmarkPage = isWishlist ? 0 : parseInt(document.getElementById('bookBookmarkInput').value, 10) || 0;
+  const totalPages = isWishlist ? 0 : parseInt(document.getElementById('bookTotalPagesInput').value, 10) || 0;
+  const rating = isWishlist ? 0 : document.querySelectorAll('#bookRatingSelector .rating-star.active').length;
   const tagsRaw = document.getElementById('bookTagsInput').value.trim();
   const tags = tagsRaw ? [...new Set(tagsRaw.split(/[,、]+/).map((t) => t.trim()).filter(Boolean))] : [];
 

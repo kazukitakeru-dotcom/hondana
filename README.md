@@ -5,6 +5,8 @@
 
 ## できること
 
+- **欲しいリスト** — まだ持っていない、これから買いたい本も同じ棚に記録できる。表紙が破線の枠になり
+  「🛒 欲しい」バッジが付くので、持っている本と区別できる。買ったら「未読」に変えるだけ
 - **本棚らしい見た目** — 表紙を木の棚板の上に並べて表示する、実物の本棚っぽいUI
 - **表紙画像** — 本ごとに表紙を撮影・選択して登録。棚がひと目でわかる
 - **ISBN・バーコードから自動入力** — ISBNを手入力、または対応端末ならカメラでバーコードを
@@ -38,8 +40,9 @@ IndexedDB `hondana-db`（**v1**）。`keyPath: 'id'`。
 
 - `books` … 本1冊ごとに1レコード
   `{ id, title, author, tags(string[]), cover(表紙のdata URLまたはopenBDのURL),
-     status('unread'|'reading'|'done'), favorite, bookmarkPage(今のページ), totalPages(総ページ数),
+     status('wishlist'|'unread'|'reading'|'done'), favorite, bookmarkPage(今のページ), totalPages(総ページ数),
      rating(0-5), memo, order(手動並び替え用), createdAt }`
+  - `status='wishlist'`（欲しいリスト）は `bookmarkPage` / `totalPages` / `rating` を持たない（常に空）
 
 同期のための内部ストア（バックアップの書き出し・復元の対象外）：
 

@@ -247,6 +247,14 @@ input, textarea { font-family: inherit; }
 
 .book-card:active .book-cover-wrap { transform: scale(0.97); box-shadow: var(--shadow); }
 
+/* まだ持っていない本（欲しいリスト）は、実在する表紙と区別するため枠を破線にする */
+.book-cover-wrap.wishlist {
+  box-shadow: none;
+  outline: 2px dashed var(--text-muted);
+  outline-offset: -2px;
+}
+.book-cover-wrap.wishlist .book-cover { opacity: .7; }
+
 .book-cover {
   width: 100%;
   height: 100%;
@@ -341,6 +349,7 @@ input, textarea { font-family: inherit; }
   color: var(--accent);
 }
 .book-status-tag.done { color: var(--done); }
+.book-status-tag.wishlist { color: var(--text-sub); }
 
 .book-tags { display: flex; gap: 4px; flex-wrap: wrap; }
 .book-tag-chip {
@@ -566,6 +575,11 @@ input, textarea { font-family: inherit; }
   background: var(--done-light);
   border-color: var(--done);
   color: var(--done);
+}
+.status-btn[data-value="wishlist"].active {
+  background: var(--surface2);
+  border-color: var(--text-sub);
+  color: var(--text-sub);
 }
 
 /* Toggle */
