@@ -137,11 +137,15 @@ async function pruneTombstones() {
 // ── State ──
 let books = [];
 let currentFilter = 'all';
+let currentTagFilter = null;
 let searchQuery = '';
+let sortMode = 'added'; // 'added' | 'title' | 'progress' | 'manual'
 let editingBookId = null;
 let pendingCoverDataUrl = null;
 let confirmCallback = null;
 let toastTimer = null;
+let undoTimer = null;
+let scanStream = null;
 
 function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -177,6 +181,27 @@ function showConfirm(title, msg, okLabel = '削除する') {
 
 document.getElementById('confirmOkBtn').addEventListener('click', () => confirmCallback && confirmCallback(true));
 document.getElementById('confirmCancelBtn').addEventListener('click', () => confirmCallback && confirmCallback(false));
+
+// ── Undo トースト ──
+// 読了チェックはワンタップで即座に状態が変わる（＝誤タップの実害が大きい）ので、
+// その場で数秒だけ取り消せるようにしておく。
+function showUndoToast(message, onUndo) {
+  const toast = document.getElementById('undo-toast');
+  document.getElementById('undo-message').textContent = message;
+  toast.classList.remove('hidden');
+  requestAnimationFrame(() => toast.classList.add('show'));
+  const hide = () => {
+    toast.classList.remove('show');
+    setTimeout(() => toast.classList.add('hidden'), 250);
+  };
+  clearTimeout(undoTimer);
+  undoTimer = setTimeout(hide, 4000);
+  document.getElementById('btn-undo').onclick = async () => {
+    clearTimeout(undoTimer);
+    hide();
+    await onUndo();
+  };
+}
 
 // ── Modal helpers ──
 function openModal(id) {
@@ -247,6 +272,98 @@ document.querySelectorAll('#statusFilter .filter-pill').forEach((pill) => {
   });
 });
 
+// ── タグフィルター（本の登録内容から動的に作る） ──
+function renderTagFilter() {
+  const row = document.getElementById('tagFilter');
+  const tags = [...new Set(books.flatMap((b) => b.tags || []))].sort((a, b) => a.localeCompare(b, 'ja'));
+  if (!tags.length || sortMode === 'manual') {
+    row.classList.add('hidden');
+    row.innerHTML = '';
+    return;
+  }
+  row.classList.remove('hidden');
+  row.innerHTML = `<button class="filter-pill ${!currentTagFilter ? 'active' : ''}" data-tag="">すべてのタグ</button>` +
+    tags.map((t) => `<button class="filter-pill ${currentTagFilter === t ? 'active' : ''}" data-tag="${escHtml(t)}">#${escHtml(t)}</button>`).join('');
+  row.querySelectorAll('.filter-pill').forEach((pill) => {
+    pill.addEventListener('click', () => {
+      currentTagFilter = pill.dataset.tag || null;
+      renderTagFilter();
+      renderBooks();
+    });
+  });
+}
+
+// ── 並び替え ──
+function isBarcodeSupported() { return 'BarcodeDetector' in window; }
+
+// 「手動（棚順）」に初めて入ったとき、order を持っていない本に順番を割り振っておく
+async function backfillOrder() {
+  const missing = books.some((b) => b.order === undefined || b.order === null);
+  if (!missing) return;
+  const ordered = books.slice().sort((a, b) => {
+    const oa = (a.order === undefined || a.order === null) ? Infinity : a.order;
+    const ob = (b.order === undefined || b.order === null) ? Infinity : b.order;
+    if (oa !== ob) return oa - ob;
+    return (b.createdAt || 0) - (a.createdAt || 0);
+  });
+  for (let i = 0; i < ordered.length; i++) {
+    if (ordered[i].order !== i) {
+      ordered[i].order = i;
+      await dbPut(STORES.books, ordered[i]);
+    }
+  }
+}
+
+async function setSortMode(mode) {
+  sortMode = mode;
+  const manual = mode === 'manual';
+  document.getElementById('sortModeBar').classList.toggle('hidden', !manual);
+  document.getElementById('shelfStats').classList.toggle('hidden', manual);
+  document.getElementById('sortSelect').classList.toggle('hidden', manual);
+  document.getElementById('statusFilter').classList.toggle('disabled-row', manual);
+  document.getElementById('searchBtn').disabled = manual;
+  if (manual) {
+    currentFilter = 'all';
+    currentTagFilter = null;
+    searchQuery = '';
+    searchInput.value = '';
+    searchBar.classList.add('hidden');
+    document.querySelectorAll('#statusFilter .filter-pill').forEach((p) => p.classList.toggle('active', p.dataset.filter === 'all'));
+    await backfillOrder();
+  }
+  renderTagFilter();
+  renderBooks();
+}
+
+document.getElementById('sortSelect').addEventListener('change', (e) => setSortMode(e.target.value));
+document.getElementById('sortDoneBtn').addEventListener('click', () => {
+  document.getElementById('sortSelect').value = 'added';
+  setSortMode('added');
+});
+
+function progressScore(b) {
+  if (b.status === 'done') return 1;
+  if (b.totalPages && b.bookmarkPage) return Math.min(0.999, b.bookmarkPage / b.totalPages);
+  if (b.bookmarkPage) return Math.min(0.5, b.bookmarkPage / 1000);
+  return 0;
+}
+
+async function moveBookOrder(id, dir, list) {
+  const idx = list.findIndex((b) => b.id === id);
+  const newIdx = idx + dir;
+  if (idx < 0 || newIdx < 0 || newIdx >= list.length) return;
+  const arr = list.slice();
+  const [item] = arr.splice(idx, 1);
+  arr.splice(newIdx, 0, item);
+  for (let i = 0; i < arr.length; i++) {
+    if (arr[i].order !== i) {
+      arr[i].order = i;
+      await dbPut(STORES.books, arr[i]);
+    }
+  }
+  renderBooks();
+}
+
 // ── 設定 ──
 document.getElementById('settingsBtn').addEventListener('click', () => {
   openModal('settingsModal');
@@ -258,25 +375,51 @@ document.getElementById('closeSettingsBtn').addEventListener('click', () => clos
 document.getElementById('fabBtn').addEventListener('click', () => openBookModal(null));
 
 // ── 本棚の描画 ──
+// 本を3冊ずつ棚板（shelf-plank）で区切り、実際の本棚のように見せている。
 const STATUS_LABEL = { unread: '未読', reading: '読書中', done: '読了' };
+const SHELF_COLS = 3;
+
+function updateShelfStats() {
+  const el = document.getElementById('shelfStats');
+  if (!el) return;
+  const total = books.length;
+  const done = books.filter((b) => b.status === 'done').length;
+  el.textContent = total ? `📚 全 ${total}冊 ・ 読了 ${done}冊` : '';
+}
 
 function renderBooks() {
   const grid = document.getElementById('bookGrid');
   const empty = document.getElementById('bookEmpty');
   const emptyText = document.getElementById('bookEmptyText');
+  const manual = sortMode === 'manual';
+
+  renderTagFilter();
+  updateShelfStats();
 
   const q = searchQuery.trim();
-  const filtered = books.filter((b) => {
+  let list = books.filter((b) => {
+    if (manual) return true;
     let matchFilter = true;
     if (currentFilter === 'reading') matchFilter = b.status === 'reading';
     else if (currentFilter === 'unread') matchFilter = b.status === 'unread';
     else if (currentFilter === 'done') matchFilter = b.status === 'done';
     else if (currentFilter === 'favorite') matchFilter = !!b.favorite;
+    const matchTag = !currentTagFilter || (b.tags || []).includes(currentTagFilter);
     const matchQ = !q || (b.title || '').includes(q) || (b.author || '').includes(q);
-    return matchFilter && matchQ;
-  }).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    return matchFilter && matchTag && matchQ;
+  });
 
-  if (!filtered.length) {
+  if (manual) {
+    list.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  } else if (sortMode === 'title') {
+    list.sort((a, b) => (a.title || '').localeCompare(b.title || '', 'ja'));
+  } else if (sortMode === 'progress') {
+    list.sort((a, b) => progressScore(b) - progressScore(a));
+  } else {
+    list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  }
+
+  if (!list.length) {
     grid.innerHTML = '';
     empty.classList.remove('hidden');
     emptyText.innerHTML = books.length
@@ -286,30 +429,60 @@ function renderBooks() {
   }
   empty.classList.add('hidden');
 
-  grid.innerHTML = filtered.map((b) => {
-    const hasProgress = b.status === 'reading' && b.totalPages && b.bookmarkPage;
-    const pct = hasProgress ? Math.min(100, Math.round((b.bookmarkPage / b.totalPages) * 100)) : null;
-    return `<div class="book-card" data-id="${b.id}">
-      <div class="book-cover-wrap">
-        <div class="book-cover">
-          ${b.cover ? `<img src="${b.cover}" alt="${escHtml(b.title)}">` : bookIcon()}
-        </div>
-        <button class="book-fav-btn ${b.favorite ? 'active' : ''}" data-fav="${b.id}" title="お気に入り" aria-label="お気に入り">★</button>
-        <button class="book-done-btn ${b.status === 'done' ? 'active' : ''}" data-done="${b.id}" title="読了にする" aria-label="読了にする">✓</button>
-        ${pct !== null ? `<div class="book-progress-track"><div class="book-progress-fill" style="width:${pct}%"></div></div>` : ''}
-      </div>
-      <div class="book-title">${escHtml(b.title)}</div>
-      ${b.author ? `<div class="book-author">${escHtml(b.author)}</div>` : ''}
-      ${b.status === 'reading' && b.bookmarkPage ? `<div class="book-status-tag">🔖 ${b.bookmarkPage}${b.totalPages ? ' / ' + b.totalPages : ''}p</div>` : ''}
-    </div>`;
-  }).join('');
+  let html = '';
+  for (let i = 0; i < list.length; i += SHELF_COLS) {
+    const row = list.slice(i, i + SHELF_COLS);
+    html += `<div class="shelf-row">${row.map((b) => renderBookCard(b, manual)).join('')}</div><div class="shelf-plank"></div>`;
+  }
+  grid.innerHTML = html;
 
+  attachBookCardHandlers(grid, list, manual);
+}
+
+function renderBookCard(b, manual) {
+  const hasProgress = b.status === 'reading' && b.totalPages && b.bookmarkPage;
+  const pct = hasProgress ? Math.min(100, Math.round((b.bookmarkPage / b.totalPages) * 100)) : null;
+  const tagsHtml = (b.tags && b.tags.length)
+    ? `<div class="book-tags">${b.tags.slice(0, 2).map((t) => `<span class="book-tag-chip">${escHtml(t)}</span>`).join('')}</div>`
+    : '';
+  const overlayHtml = manual
+    ? `<button class="book-move-btn book-move-prev" data-move="${b.id}" data-dir="-1" title="前へ" aria-label="前へ">◀</button>
+       <button class="book-move-btn book-move-next" data-move="${b.id}" data-dir="1" title="次へ" aria-label="次へ">▶</button>`
+    : `<button class="book-fav-btn ${b.favorite ? 'active' : ''}" data-fav="${b.id}" title="お気に入り" aria-label="お気に入り">★</button>
+       <button class="book-done-btn ${b.status === 'done' ? 'active' : ''}" data-done="${b.id}" title="読了にする" aria-label="読了にする">✓</button>`;
+
+  return `<div class="book-card" data-id="${b.id}">
+    <div class="book-cover-wrap">
+      <div class="book-cover">
+        ${b.cover ? `<img src="${b.cover}" alt="${escHtml(b.title)}" loading="lazy">` : bookIcon()}
+      </div>
+      ${overlayHtml}
+      ${pct !== null ? `<div class="book-progress-track"><div class="book-progress-fill" style="width:${pct}%"></div></div>` : ''}
+    </div>
+    <div class="book-title">${escHtml(b.title)}</div>
+    ${b.author ? `<div class="book-author">${escHtml(b.author)}</div>` : ''}
+    ${b.status === 'reading' && b.bookmarkPage ? `<div class="book-status-tag">🔖 ${b.bookmarkPage}${b.totalPages ? ' / ' + b.totalPages : ''}p</div>` : ''}
+    ${tagsHtml}
+  </div>`;
+}
+
+function attachBookCardHandlers(grid, list, manual) {
   grid.querySelectorAll('.book-card').forEach((card) => {
     card.addEventListener('click', (e) => {
-      if (e.target.closest('.book-fav-btn') || e.target.closest('.book-done-btn')) return;
+      if (e.target.closest('.book-fav-btn') || e.target.closest('.book-done-btn') || e.target.closest('.book-move-btn')) return;
       openBookModal(card.dataset.id);
     });
   });
+
+  if (manual) {
+    grid.querySelectorAll('.book-move-btn').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        moveBookOrder(btn.dataset.move, parseInt(btn.dataset.dir, 10), list);
+      });
+    });
+    return;
+  }
 
   grid.querySelectorAll('.book-fav-btn').forEach((btn) => {
     btn.addEventListener('click', async (e) => {
@@ -327,6 +500,8 @@ function renderBooks() {
       e.stopPropagation();
       const b = books.find((x) => x.id === btn.dataset.done);
       if (!b) return;
+      const prevStatus = b.status;
+      const prevBookmark = b.bookmarkPage;
       if (b.status === 'done') {
         b.status = (b.bookmarkPage && b.bookmarkPage > 0) ? 'reading' : 'unread';
       } else {
@@ -334,8 +509,14 @@ function renderBooks() {
         if (b.totalPages) b.bookmarkPage = b.totalPages;
       }
       await dbPut(STORES.books, b);
-      showToast(b.status === 'done' ? '読了にしました' : '読了を解除しました');
       renderBooks();
+      // ワンタップで確定してしまう操作なので、数秒だけ取り消せるようにしておく（誤操作対策）
+      showUndoToast(b.status === 'done' ? '読了にしました' : '読了を解除しました', async () => {
+        b.status = prevStatus;
+        b.bookmarkPage = prevBookmark;
+        await dbPut(STORES.books, b);
+        renderBooks();
+      });
     });
   });
 }
@@ -353,11 +534,13 @@ function openBookModal(id) {
   document.getElementById('bookModalTitle').textContent = b ? '本を編集' : '本を追加';
   document.getElementById('bookTitleInput').value = b ? b.title : '';
   document.getElementById('bookAuthorInput').value = b ? (b.author || '') : '';
+  document.getElementById('bookTagsInput').value = b && b.tags ? b.tags.join(', ') : '';
   document.getElementById('bookMemoInput').value = b ? (b.memo || '') : '';
   document.getElementById('bookBookmarkInput').value = b && b.bookmarkPage ? b.bookmarkPage : '';
   document.getElementById('bookTotalPagesInput').value = b && b.totalPages ? b.totalPages : '';
   document.getElementById('bookFavoriteInput').checked = !!(b && b.favorite);
   document.getElementById('deleteBookBtn').style.display = b ? '' : 'none';
+  document.getElementById('isbnInput').value = '';
 
   const status = (b && b.status) || 'unread';
   document.querySelectorAll('#bookStatusSelector .status-btn').forEach((btn) => {
@@ -420,6 +603,104 @@ function updateProgressHint() {
 document.getElementById('bookBookmarkInput').addEventListener('input', updateProgressHint);
 document.getElementById('bookTotalPagesInput').addEventListener('input', updateProgressHint);
 
+// ── ISBNから取得 ──
+// openBD の author は "姓,名,生年-没年" や "著者1/著者2/著" のような生の書誌形式で返ってくるので、
+// 生没年や「著」「訳」「編」だけの断片を落として読みやすくする。
+function cleanAuthorName(raw) {
+  return String(raw)
+    .split('/')
+    .map((part) => part.split(',')
+      .map((s) => s.trim())
+      .filter((s) => s && !/^\d{3,4}-\d{0,4}$/.test(s) && !['著', '訳', '編', '監修'].includes(s))
+      .join(' '))
+    .filter(Boolean)
+    .join('、');
+}
+
+// openBD（https://openbd.jp/）は国内書誌データベース。APIキー不要・CORS対応。
+async function handleIsbnLookup(rawIsbn) {
+  const isbn = String(rawIsbn).replace(/[^0-9Xx]/g, '');
+  if (isbn.length < 9) { showToast('ISBNの形式が正しくありません'); return; }
+  showToast('書籍情報を検索中…');
+  try {
+    const res = await fetch(`https://api.openbd.jp/v1/get?isbn=${encodeURIComponent(isbn)}`);
+    const data = await res.json();
+    const rec = data && data[0];
+    if (!rec || !rec.summary) { showToast('見つかりませんでした。手入力してください'); return; }
+    const s = rec.summary;
+    if (s.title) document.getElementById('bookTitleInput').value = s.title;
+    if (s.author) document.getElementById('bookAuthorInput').value = cleanAuthorName(s.author);
+    if (s.cover) {
+      // 表紙は openBD 側のURLをそのまま使う（同期の負担にならず、CORSの制約も受けない）。
+      // 手動でアップロードし直せば、いつでも縮小済みの自前画像に差し替えられる。
+      pendingCoverDataUrl = s.cover;
+      const area = document.getElementById('coverUploadArea');
+      const existing = area.querySelector('img');
+      if (existing) existing.remove();
+      const img = document.createElement('img');
+      img.src = s.cover;
+      area.appendChild(img);
+    }
+    showToast('書籍情報を取得しました');
+  } catch (err) {
+    showToast('検索に失敗しました（オフラインの可能性があります）');
+  }
+}
+
+document.getElementById('isbnLookupBtn').addEventListener('click', () => {
+  const v = document.getElementById('isbnInput').value.trim();
+  if (!v) { showToast('ISBNを入力してください'); return; }
+  handleIsbnLookup(v);
+});
+
+// ── バーコード読み取り ──
+// ブラウザ標準の Shape Detection API（BarcodeDetector）を使う。外部ライブラリは使わない。
+// 対応していない端末（iOS Safari など）では scanIsbnBtn 自体を隠すので、この関数は呼ばれない。
+async function startBarcodeScan() {
+  if (!isBarcodeSupported()) { showToast('この端末はバーコード読み取りに対応していません'); return; }
+  const overlay = document.getElementById('scanOverlay');
+  const video = document.getElementById('scanVideo');
+  try {
+    scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+  } catch (e) {
+    showToast('カメラを使用できませんでした');
+    return;
+  }
+  video.srcObject = scanStream;
+  await video.play();
+  overlay.classList.remove('hidden');
+
+  const detector = new BarcodeDetector({ formats: ['ean_13', 'ean_8'] });
+  let stopped = false;
+  document.getElementById('scanCloseBtn').onclick = () => { stopped = true; stopBarcodeScan(); };
+
+  const tick = async () => {
+    if (stopped) return;
+    try {
+      const codes = await detector.detect(video);
+      if (codes.length) {
+        stopped = true;
+        const value = codes[0].rawValue;
+        stopBarcodeScan();
+        await handleIsbnLookup(value);
+        return;
+      }
+    } catch (e) { /* 検出失敗はそのまま次のフレームへ */ }
+    requestAnimationFrame(tick);
+  };
+  tick();
+}
+
+function stopBarcodeScan() {
+  document.getElementById('scanOverlay').classList.add('hidden');
+  if (scanStream) {
+    scanStream.getTracks().forEach((t) => t.stop());
+    scanStream = null;
+  }
+}
+
+document.getElementById('scanIsbnBtn').addEventListener('click', startBarcodeScan);
+
 // 表紙画像
 document.getElementById('coverUploadArea').addEventListener('click', () => {
   document.getElementById('coverFileInput').click();
@@ -459,11 +740,13 @@ document.getElementById('saveBookBtn').addEventListener('click', async () => {
   const statusBtn = document.querySelector('#bookStatusSelector .status-btn.active');
   const status = statusBtn ? statusBtn.dataset.value : 'unread';
   const rating = document.querySelectorAll('#bookRatingSelector .rating-star.active').length;
+  const tagsRaw = document.getElementById('bookTagsInput').value.trim();
+  const tags = tagsRaw ? [...new Set(tagsRaw.split(/[,、]+/).map((t) => t.trim()).filter(Boolean))] : [];
 
   if (editingBookId) {
     const b = books.find((x) => x.id === editingBookId);
     Object.assign(b, {
-      title, author, memo, favorite, status, rating,
+      title, author, memo, favorite, status, rating, tags,
       bookmarkPage: bookmarkPage || null,
       totalPages: totalPages || null,
       cover: pendingCoverDataUrl || b.cover || null,
@@ -471,11 +754,13 @@ document.getElementById('saveBookBtn').addEventListener('click', async () => {
     await dbPut(STORES.books, b);
     showToast('本を更新しました');
   } else {
+    const maxOrder = books.reduce((m, x) => Math.max(m, x.order ?? -1), -1);
     const b = {
-      id: uid(), title, author, memo, favorite, status, rating,
+      id: uid(), title, author, memo, favorite, status, rating, tags,
       bookmarkPage: bookmarkPage || null,
       totalPages: totalPages || null,
       cover: pendingCoverDataUrl || null,
+      order: maxOrder + 1,
       createdAt: Date.now(),
     };
     books.push(b);
@@ -556,6 +841,7 @@ function escHtml(str) {
 
 // ── Init ──
 (async () => {
+  if (!isBarcodeSupported()) document.getElementById('scanIsbnBtn').classList.add('hidden');
   await openDB();
   await pruneTombstones();
   await loadAll();

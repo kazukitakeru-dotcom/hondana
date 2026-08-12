@@ -43,11 +43,31 @@
       <button class="filter-pill" data-filter="done">読了</button>
       <button class="filter-pill" data-filter="favorite">★ お気に入り</button>
     </div>
+
+    <!-- Tag pills (dynamic, hidden if no tags yet) -->
+    <div class="filter-row hidden" id="tagFilter"></div>
+
+    <!-- Stats / sort toolbar -->
+    <div class="toolbar-row">
+      <span class="shelf-stats" id="shelfStats"></span>
+      <div class="sort-mode-bar hidden" id="sortModeBar">
+        <span class="sort-mode-label">並び替え中 ― ◀▶で移動</span>
+        <button class="sort-done-btn" id="sortDoneBtn">完了</button>
+      </div>
+      <select class="sort-select" id="sortSelect" title="並び替え">
+        <option value="added">追加順</option>
+        <option value="title">タイトル順</option>
+        <option value="progress">進捗順</option>
+        <option value="manual">手動（棚順）</option>
+      </select>
+    </div>
   </header>
 
   <!-- Book grid -->
   <div class="page active" id="page-books">
-    <div class="book-grid" id="bookGrid"></div>
+    <div class="bookshelf-frame">
+      <div class="book-grid" id="bookGrid"></div>
+    </div>
     <div class="empty-state hidden" id="bookEmpty">
       <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>
       <p id="bookEmptyText">本棚はまだ空です。<br>＋ボタンで本を追加しましょう。</p>
@@ -70,6 +90,16 @@
     <h2 class="modal-title" id="bookModalTitle">本を追加</h2>
 
     <div class="form-group">
+      <label class="form-label">ISBNから取得（任意）</label>
+      <div class="isbn-row">
+        <input class="form-input" type="text" id="isbnInput" placeholder="978から始まる13桁" inputmode="numeric">
+        <button class="btn btn-sm btn-outline" style="width:auto;" id="isbnLookupBtn">取得</button>
+      </div>
+      <button class="btn btn-sm btn-outline" style="width:auto;margin-top:8px;" id="scanIsbnBtn">📷 バーコードを読み取る</button>
+      <p class="form-hint">openBD（国内書誌データベース）からタイトル・著者・表紙を取得します。通信が必要です。バーコード読み取りは対応端末のみ。</p>
+    </div>
+
+    <div class="form-group">
       <label class="form-label">表紙</label>
       <div class="cover-upload-area" id="coverUploadArea">
         <input type="file" id="coverFileInput" accept="image/*">
@@ -86,6 +116,11 @@
     <div class="form-group">
       <label class="form-label">著者</label>
       <input class="form-input" type="text" id="bookAuthorInput" placeholder="例：夏目漱石">
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">ジャンル・タグ</label>
+      <input class="form-input" type="text" id="bookTagsInput" placeholder="例：SF, エッセイ（カンマ区切り）">
     </div>
 
     <div class="form-group">
@@ -236,6 +271,20 @@
 
 <!-- Toast -->
 <div class="toast" id="toast"></div>
+
+<!-- Undo Toast（読了トグルなどの誤操作対策） -->
+<div id="undo-toast" class="undo-toast hidden" role="status">
+  <span id="undo-message">読了にしました</span>
+  <button id="btn-undo">元に戻す</button>
+</div>
+
+<!-- Barcode Scan Overlay -->
+<div class="scan-overlay hidden" id="scanOverlay">
+  <video id="scanVideo" playsinline muted></video>
+  <div class="scan-frame"></div>
+  <p class="scan-hint">ISBNバーコードを枠内に合わせてください</p>
+  <button class="scan-close-btn" id="scanCloseBtn" aria-label="閉じる">✕</button>
+</div>
 
 <script src="app.js"></script>
 <script src="sync.js"></script>
