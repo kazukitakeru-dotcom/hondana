@@ -139,12 +139,16 @@ let books = [];
 let currentFilter = 'all';
 let currentTagFilter = null;
 let searchQuery = '';
-let sortMode = 'added'; // 'added' | 'title' | 'progress' | 'manual'
+// 並び替えモードは「今回どの順で見るか」なので端末をまたいで持ち歩く必要はなく、
+// localStorage にだけ覚えておく（Supabase同期の対象にはしない）。
+const SORT_MODE_KEY = 'hondana_sort_mode_v1';
+const SORT_MODES = ['added', 'title', 'progress', 'manual'];
+let sortMode = SORT_MODES.includes(localStorage.getItem(SORT_MODE_KEY)) ? localStorage.getItem(SORT_MODE_KEY) : 'added';
+let reorderEditing = false; // 「✎ 並び替え」で棚順を直接編集中かどうか（sortMode==='manual'のときだけ意味を持つ）
 let editingBookId = null;
 let pendingCoverDataUrl = null;
 let confirmCallback = null;
 let toastTimer = null;
-let undoTimer = null;
 let scanStream = null;
 
 function uid() {
@@ -181,27 +185,6 @@ function showConfirm(title, msg, okLabel = '削除する') {
 
 document.getElementById('confirmOkBtn').addEventListener('click', () => confirmCallback && confirmCallback(true));
 document.getElementById('confirmCancelBtn').addEventListener('click', () => confirmCallback && confirmCallback(false));
-
-// ── Undo トースト ──
-// 読了チェックはワンタップで即座に状態が変わる（＝誤タップの実害が大きい）ので、
-// その場で数秒だけ取り消せるようにしておく。
-function showUndoToast(message, onUndo) {
-  const toast = document.getElementById('undo-toast');
-  document.getElementById('undo-message').textContent = message;
-  toast.classList.remove('hidden');
-  requestAnimationFrame(() => toast.classList.add('show'));
-  const hide = () => {
-    toast.classList.remove('show');
-    setTimeout(() => toast.classList.add('hidden'), 250);
-  };
-  clearTimeout(undoTimer);
-  undoTimer = setTimeout(hide, 4000);
-  document.getElementById('btn-undo').onclick = async () => {
-    clearTimeout(undoTimer);
-    hide();
-    await onUndo();
-  };
-}
 
 // ── Modal helpers ──
 function openModal(id) {
@@ -314,32 +297,56 @@ async function backfillOrder() {
   }
 }
 
+// sortMode は「今どの並びで見るか」そのもの（一覧の見た目に常に反映される）。
+// reorderEditing は「手動（棚順）を今まさに手で直しているか」という別のフラグで、
+// 「✎ 並び替え」を押したときだけ立つ。これを分けたのは、以前は手動を選んだ瞬間に
+// 矢印編集モードへ強制的に入り、「完了」を押すと追加順に戻ってしまっていたため
+// （＝せっかく並べ替えても普段の表示には反映されない、という不具合だった）。
+function updateReorderUI() {
+  const manual = sortMode === 'manual';
+  document.getElementById('sortModeBar').classList.toggle('hidden', !reorderEditing);
+  document.getElementById('shelfStats').classList.toggle('hidden', reorderEditing);
+  document.getElementById('sortControls').classList.toggle('hidden', reorderEditing);
+  document.getElementById('reorderEditBtn').classList.toggle('hidden', !manual || reorderEditing);
+  document.getElementById('statusFilter').classList.toggle('disabled-row', reorderEditing);
+  document.getElementById('tagFilter').classList.toggle('disabled-row', reorderEditing);
+  document.getElementById('searchBtn').disabled = reorderEditing;
+}
+
 async function setSortMode(mode) {
   sortMode = mode;
-  const manual = mode === 'manual';
-  document.getElementById('sortModeBar').classList.toggle('hidden', !manual);
-  document.getElementById('shelfStats').classList.toggle('hidden', manual);
-  document.getElementById('sortSelect').classList.toggle('hidden', manual);
-  document.getElementById('statusFilter').classList.toggle('disabled-row', manual);
-  document.getElementById('searchBtn').disabled = manual;
-  if (manual) {
-    currentFilter = 'all';
-    currentTagFilter = null;
-    searchQuery = '';
-    searchInput.value = '';
-    searchBar.classList.add('hidden');
-    document.querySelectorAll('#statusFilter .filter-pill').forEach((p) => p.classList.toggle('active', p.dataset.filter === 'all'));
-    await backfillOrder();
-  }
+  localStorage.setItem(SORT_MODE_KEY, mode);
+  if (mode !== 'manual' && reorderEditing) reorderEditing = false;
+  updateReorderUI();
+  renderTagFilter();
+  renderBooks();
+}
+
+async function enterReorderEditing() {
+  // 矢印での入れ替えは「今見えている並び全部」に対して行うので、絞り込みが効いたままだと
+  // 順番の意味が曖昧になる。編集中だけ絞り込みを外す（絞り込み自体は編集後も残さない）。
+  currentFilter = 'all';
+  currentTagFilter = null;
+  searchQuery = '';
+  searchInput.value = '';
+  searchBar.classList.add('hidden');
+  document.querySelectorAll('#statusFilter .filter-pill').forEach((p) => p.classList.toggle('active', p.dataset.filter === 'all'));
+  await backfillOrder();
+  reorderEditing = true;
+  updateReorderUI();
+  renderBooks();
+}
+
+function exitReorderEditing() {
+  reorderEditing = false;
+  updateReorderUI();
   renderTagFilter();
   renderBooks();
 }
 
 document.getElementById('sortSelect').addEventListener('change', (e) => setSortMode(e.target.value));
-document.getElementById('sortDoneBtn').addEventListener('click', () => {
-  document.getElementById('sortSelect').value = 'added';
-  setSortMode('added');
-});
+document.getElementById('reorderEditBtn').addEventListener('click', enterReorderEditing);
+document.getElementById('sortDoneBtn').addEventListener('click', exitReorderEditing);
 
 function progressScore(b) {
   if (b.status === 'done') return 1;
@@ -376,7 +383,6 @@ document.getElementById('fabBtn').addEventListener('click', () => openBookModal(
 
 // ── 本棚の描画 ──
 // 本を3冊ずつ棚板（shelf-plank）で区切り、実際の本棚のように見せている。
-const STATUS_LABEL = { unread: '未読', reading: '読書中', done: '読了' };
 const SHELF_COLS = 3;
 
 function updateShelfStats() {
@@ -392,13 +398,14 @@ function renderBooks() {
   const empty = document.getElementById('bookEmpty');
   const emptyText = document.getElementById('bookEmptyText');
   const manual = sortMode === 'manual';
+  const showArrows = manual && reorderEditing;
 
   renderTagFilter();
   updateShelfStats();
 
   const q = searchQuery.trim();
   let list = books.filter((b) => {
-    if (manual) return true;
+    if (showArrows) return true; // 編集中は絞り込みを無視して全冊を対象にする
     let matchFilter = true;
     if (currentFilter === 'reading') matchFilter = b.status === 'reading';
     else if (currentFilter === 'unread') matchFilter = b.status === 'unread';
@@ -410,6 +417,7 @@ function renderBooks() {
   });
 
   if (manual) {
+    // 手動（棚順）は普段の閲覧でもそのまま使う並び。絞り込みと組み合わせても崩れない。
     list.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   } else if (sortMode === 'title') {
     list.sort((a, b) => (a.title || '').localeCompare(b.title || '', 'ja'));
@@ -432,57 +440,50 @@ function renderBooks() {
   let html = '';
   for (let i = 0; i < list.length; i += SHELF_COLS) {
     const row = list.slice(i, i + SHELF_COLS);
-    html += `<div class="shelf-row">${row.map((b) => renderBookCard(b, manual)).join('')}</div><div class="shelf-plank"></div>`;
+    html += `<div class="shelf-row">${row.map((b) => renderBookCard(b, showArrows)).join('')}</div><div class="shelf-plank"></div>`;
   }
   grid.innerHTML = html;
 
-  attachBookCardHandlers(grid, list, manual);
+  attachBookCardHandlers(grid, list, showArrows);
 }
 
-function renderBookCard(b, manual) {
+function renderBookCard(b, showArrows) {
   const hasProgress = b.status === 'reading' && b.totalPages && b.bookmarkPage;
   const pct = hasProgress ? Math.min(100, Math.round((b.bookmarkPage / b.totalPages) * 100)) : null;
   const tagsHtml = (b.tags && b.tags.length)
     ? `<div class="book-tags">${b.tags.slice(0, 2).map((t) => `<span class="book-tag-chip">${escHtml(t)}</span>`).join('')}</div>`
     : '';
-  const overlayHtml = manual
+  // 読了のオン/オフはカード上のワンタップにはしていない（誤操作の元になるため）。
+  // 状態を変えたいときは、本を開いて編集画面の「状態」から選ぶ。
+  const moveHtml = showArrows
     ? `<button class="book-move-btn book-move-prev" data-move="${b.id}" data-dir="-1" title="前へ" aria-label="前へ">◀</button>
        <button class="book-move-btn book-move-next" data-move="${b.id}" data-dir="1" title="次へ" aria-label="次へ">▶</button>`
-    : `<button class="book-fav-btn ${b.favorite ? 'active' : ''}" data-fav="${b.id}" title="お気に入り" aria-label="お気に入り">★</button>
-       <button class="book-done-btn ${b.status === 'done' ? 'active' : ''}" data-done="${b.id}" title="読了にする" aria-label="読了にする">✓</button>`;
+    : '';
 
   return `<div class="book-card" data-id="${b.id}">
     <div class="book-cover-wrap">
       <div class="book-cover">
         ${b.cover ? `<img src="${b.cover}" alt="${escHtml(b.title)}" loading="lazy">` : bookIcon()}
       </div>
-      ${overlayHtml}
+      <button class="book-fav-btn ${b.favorite ? 'active' : ''}" data-fav="${b.id}" title="お気に入り" aria-label="お気に入り">★</button>
+      ${moveHtml}
       ${pct !== null ? `<div class="book-progress-track"><div class="book-progress-fill" style="width:${pct}%"></div></div>` : ''}
     </div>
     <div class="book-title">${escHtml(b.title)}</div>
     ${b.author ? `<div class="book-author">${escHtml(b.author)}</div>` : ''}
     ${b.status === 'reading' && b.bookmarkPage ? `<div class="book-status-tag">🔖 ${b.bookmarkPage}${b.totalPages ? ' / ' + b.totalPages : ''}p</div>` : ''}
+    ${b.status === 'done' ? `<div class="book-status-tag done">✓ 読了</div>` : ''}
     ${tagsHtml}
   </div>`;
 }
 
-function attachBookCardHandlers(grid, list, manual) {
+function attachBookCardHandlers(grid, list, showArrows) {
   grid.querySelectorAll('.book-card').forEach((card) => {
     card.addEventListener('click', (e) => {
-      if (e.target.closest('.book-fav-btn') || e.target.closest('.book-done-btn') || e.target.closest('.book-move-btn')) return;
+      if (e.target.closest('.book-fav-btn') || e.target.closest('.book-move-btn')) return;
       openBookModal(card.dataset.id);
     });
   });
-
-  if (manual) {
-    grid.querySelectorAll('.book-move-btn').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        moveBookOrder(btn.dataset.move, parseInt(btn.dataset.dir, 10), list);
-      });
-    });
-    return;
-  }
 
   grid.querySelectorAll('.book-fav-btn').forEach((btn) => {
     btn.addEventListener('click', async (e) => {
@@ -495,30 +496,14 @@ function attachBookCardHandlers(grid, list, manual) {
     });
   });
 
-  grid.querySelectorAll('.book-done-btn').forEach((btn) => {
-    btn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const b = books.find((x) => x.id === btn.dataset.done);
-      if (!b) return;
-      const prevStatus = b.status;
-      const prevBookmark = b.bookmarkPage;
-      if (b.status === 'done') {
-        b.status = (b.bookmarkPage && b.bookmarkPage > 0) ? 'reading' : 'unread';
-      } else {
-        b.status = 'done';
-        if (b.totalPages) b.bookmarkPage = b.totalPages;
-      }
-      await dbPut(STORES.books, b);
-      renderBooks();
-      // ワンタップで確定してしまう操作なので、数秒だけ取り消せるようにしておく（誤操作対策）
-      showUndoToast(b.status === 'done' ? '読了にしました' : '読了を解除しました', async () => {
-        b.status = prevStatus;
-        b.bookmarkPage = prevBookmark;
-        await dbPut(STORES.books, b);
-        renderBooks();
+  if (showArrows) {
+    grid.querySelectorAll('.book-move-btn').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        moveBookOrder(btn.dataset.move, parseInt(btn.dataset.dir, 10), list);
       });
     });
-  });
+  }
 }
 
 function bookIcon() {
@@ -842,6 +827,8 @@ function escHtml(str) {
 // ── Init ──
 (async () => {
   if (!isBarcodeSupported()) document.getElementById('scanIsbnBtn').classList.add('hidden');
+  document.getElementById('sortSelect').value = sortMode;
+  updateReorderUI();
   await openDB();
   await pruneTombstones();
   await loadAll();

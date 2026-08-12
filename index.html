@@ -54,12 +54,15 @@
         <span class="sort-mode-label">並び替え中 ― ◀▶で移動</span>
         <button class="sort-done-btn" id="sortDoneBtn">完了</button>
       </div>
-      <select class="sort-select" id="sortSelect" title="並び替え">
-        <option value="added">追加順</option>
-        <option value="title">タイトル順</option>
-        <option value="progress">進捗順</option>
-        <option value="manual">手動（棚順）</option>
-      </select>
+      <div class="sort-controls" id="sortControls">
+        <button class="reorder-edit-btn hidden" id="reorderEditBtn">✎ 並び替え</button>
+        <select class="sort-select" id="sortSelect" title="並び替え">
+          <option value="added">追加順</option>
+          <option value="title">タイトル順</option>
+          <option value="progress">進捗順</option>
+          <option value="manual">手動（棚順）</option>
+        </select>
+      </div>
     </div>
   </header>
 
@@ -271,12 +274,6 @@
 
 <!-- Toast -->
 <div class="toast" id="toast"></div>
-
-<!-- Undo Toast（読了トグルなどの誤操作対策） -->
-<div id="undo-toast" class="undo-toast hidden" role="status">
-  <span id="undo-message">読了にしました</span>
-  <button id="btn-undo">元に戻す</button>
-</div>
 
 <!-- Barcode Scan Overlay -->
 <div class="scan-overlay hidden" id="scanOverlay">

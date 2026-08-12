@@ -145,6 +145,8 @@ input, textarea { font-family: inherit; }
 
 .shelf-stats { font-size: 12px; color: var(--text-sub); }
 
+.sort-controls { display: flex; align-items: center; gap: 8px; }
+
 .sort-select {
   height: 30px;
   font-size: 12px;
@@ -158,6 +160,17 @@ input, textarea { font-family: inherit; }
   appearance: none;
 }
 .sort-select:focus { outline: none; border-color: var(--primary); }
+
+.reorder-edit-btn {
+  height: 30px;
+  font-size: 12px;
+  font-weight: 500;
+  border: 1.5px solid var(--accent);
+  border-radius: var(--radius-full);
+  padding: 0 12px;
+  background: var(--accent-light);
+  color: var(--accent);
+}
 
 .sort-mode-bar {
   display: flex;
@@ -250,8 +263,9 @@ input, textarea { font-family: inherit; }
   object-fit: cover;
 }
 
-.book-fav-btn, .book-done-btn {
+.book-fav-btn {
   position: absolute;
+  top: 6px; right: 6px;
   width: 26px;
   height: 26px;
   border-radius: 50%;
@@ -265,13 +279,8 @@ input, textarea { font-family: inherit; }
   box-shadow: var(--shadow-sm);
   transition: background var(--transition), color var(--transition), transform var(--transition);
 }
-
-.book-fav-btn { top: 6px; right: 6px; }
 .book-fav-btn.active { color: var(--favorite); }
-.book-fav-btn:active, .book-done-btn:active { transform: scale(0.88); }
-
-.book-done-btn { top: 6px; left: 6px; }
-.book-done-btn.active { background: var(--done); color: white; }
+.book-fav-btn:active { transform: scale(0.88); }
 
 .book-move-btn {
   position: absolute;
@@ -331,6 +340,7 @@ input, textarea { font-family: inherit; }
   font-weight: 500;
   color: var(--accent);
 }
+.book-status-tag.done { color: var(--done); }
 
 .book-tags { display: flex; gap: 4px; flex-wrap: wrap; }
 .book-tag-chip {
@@ -745,38 +755,6 @@ input, textarea { font-family: inherit; }
 }
 
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
-
-/* ── Undo Toast ── */
-.undo-toast {
-  position: fixed;
-  left: 14px; right: 14px;
-  bottom: max(90px, calc(env(safe-area-inset-bottom) + 82px));
-  background: var(--text);
-  color: white;
-  border-radius: var(--radius);
-  padding: 14px 16px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  z-index: 2500;
-  font-size: 14px;
-  box-shadow: var(--shadow-lg);
-  opacity: 0;
-  transform: translateY(12px);
-  transition: opacity .25s, transform .25s;
-  pointer-events: none;
-}
-.undo-toast.show { opacity: 1; transform: translateY(0); pointer-events: auto; }
-#btn-undo {
-  color: var(--favorite);
-  font-weight: 700;
-  font-size: 14px;
-  background: none;
-  border: none;
-  padding: 4px 8px;
-  flex-shrink: 0;
-}
 
 /* ── ISBN lookup ── */
 .isbn-row { display: flex; gap: 8px; }
