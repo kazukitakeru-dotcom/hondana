@@ -279,6 +279,10 @@ async function _waitForDb() {
 async function syncNow(opts = {}) {
   if (_syncing) return;
   if (!sbIsLoggedIn()) return;
+  // 棚順を矢印で編集している最中は取り込まない。取り込むと手元の並びが作業中に
+  // 入れ替わり、直後の移動が古い並びを元に書き戻してしまう。
+  // 編集を抜けるときに app.js の exitReorderEditing が改めて同期を促す。
+  if (typeof reorderEditing !== 'undefined' && reorderEditing) return;
   if (!navigator.onLine) { _lastSyncError = 'オフライン'; updateSyncUI(); return; }
 
   _syncing = true;

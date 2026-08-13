@@ -18,8 +18,10 @@ iPhone のホーム画面に追加して使う。classic script なので `impor
 
 - `books` … 本のレコード。`status` は `'wishlist' | 'unread' | 'reading' | 'done'`
   - `'wishlist'`（欲しいリスト＝まだ持っていない本）のときは `bookmarkFieldGroup` / `ratingFieldGroup` を
-    編集画面で隠し、保存時にも `bookmarkPage` / `totalPages` / `rating` を強制的に空にする
-    （`updateFieldVisibilityForStatus()`、`saveBookBtn` ハンドラの `isWishlist` 分岐）。
+    編集画面で隠す（`updateFieldVisibilityForStatus()`）。**隠すだけで値は消さない** ―
+    保存時は既存の値をそのまま持ち越す（`saveBookBtn` ハンドラの `isWishlist` 分岐）。
+    以前は 0 で上書きしていたが、間違えて「欲しい」にすると読みかけのページ数と評価が
+    警告なしに消えてしまうため改めた。
     カードは `.book-cover-wrap.wishlist`（破線枠）と `🛒 欲しい` バッジで区別する
   - `updateShelfStats()` の「全N冊」には `wishlist` を含めない（所有冊数ではないため）。
     1冊以上あるときだけ「・🛒 欲しい N冊」を末尾に足す
@@ -32,8 +34,9 @@ iPhone のホーム画面に追加して使う。classic script なので `impor
   - お気に入り★はカード一覧のままワンタップでよい（軽くて頻繁な操作なので対象外）
   - `tags` … カンマ区切り入力をパースした string[]。タグの管理画面は無く、全本の `tags` から
     `renderTagFilter()` が動的にタグ一覧を作る（正規化された「タグ管理」ではなく素朴な実装）
-  - `order` … 「手動（棚順）」用。初めて手動モードに入ったときだけ `backfillOrder()` で
-    既存の本に連番を振る。以後は移動のたびに表示中の並びへ連番を振り直す
+  - `order` … 「手動（棚順）」用。棚順の編集に入るたび `backfillOrder()` が 0,1,2… に整える
+    （order を持たない旧データへの番号付けと、削除で空いた番号の詰め直しを兼ねる）。
+    以後は移動のたびに表示中の並びへ連番を振り直す
 - `tombstones` / `_sync` … 同期用の内部ストア（`sync.js` 参照）
 
 ## 本棚UI（棚板レイアウト）
@@ -61,6 +64,15 @@ iPhone のホーム画面に追加して使う。classic script なので `impor
 反映されず、「並び替えても意味がない」という不具合として報告された。`sortMode`（表示順そのもの）と
 `reorderEditing`（今矢印で編集中かどうか）を別の状態に分離したのはその修正。
 
+この分離のとき `renderTagFilter()` の条件を直し忘れ、**手動（棚順）で普通に見ているだけでも
+タグ行が消える**バグが残っていた。タグで絞ったまま手動に切り替えると、絞り込みは効いたまま
+解除するUIだけが消え、「本が消えた」ようにしか見えなくなる。
+絞り込み系UIを出し分ける条件は `sortMode` ではなく **`reorderEditing`** で判定すること。
+
+棚順の編集中は `syncNow()` が早期 return して取り込みを見送る（作業中に並びが入れ替わり、
+直後の移動が古い並びを書き戻してしまうため）。抜けるときに `exitReorderEditing()` が
+`notifyLocalChange()` を呼んで同期を促す。
+
 ## ISBN / バーコード
 
 - 手入力：`handleIsbnLookup()` が openBD（`https://api.openbd.jp/v1/get?isbn=...`、キー不要・CORS対応）
@@ -69,17 +81,26 @@ iPhone のホーム画面に追加して使う。classic script なので `impor
 - カメラ読み取り：ブラウザ標準の `BarcodeDetector`（Shape Detection API）のみを使う。外部ライブラリは無し。
   **iOS Safari は未対応**なので `isBarcodeSupported()` で判定し、非対応なら `scanIsbnBtn` 自体を隠す
   （手入力＋取得ボタンは常にどの端末でも使える）
-- 表紙は openBD が返す画像URLをそのまま `cover` に保存する（`readAndResizeImage` を通さない）。
-  data URL 化するとCORSでcanvasが汚染されて失敗しうるため。オフライン時は表紙が読み込めないが、
-  手動で表紙をアップロードし直せばいつでも縮小済みの自前画像に置き換えられる
+- 表紙は `localizeCoverUrl()` で**端末に取り込むのを試みる**（fetch → 縮小 → data URL）。
+  こうしておけばオフラインでも表示でき、openBD側のリンクが切れても残る。
+  CORS拒否などで取り込めなかったときだけURLのまま持つ（その場合オフラインでは読めないが、
+  カード側で本のアイコンにフォールバックする）
 
 ## 改修時の注意
 
 - **`sw.js` の `CACHE_NAME` を必ずバンプする。** 上げないと古いキャッシュが配られる。
   新しいファイルは `FILES_TO_CACHE` 配列にも追加すること。
 - **HTMLに値を埋めるときは必ず `escHtml()` を通す。** タイトルや著者に `"` `<` が入ると壊れる。
+  `src` などの**属性値も例外ではない**（`cover` を素通しにしていて属性を注入できる状態だった）。
 - 表紙画像は `readAndResizeImage()` で長辺640px・JPEG 0.85 に縮小してから `cover` に
   data URL のまま保存する。生の写真をそのまま入れると同期の送信量が跳ね上がる。
+- **表紙の更新は必ず `setCoverPreview()` を通す。** `pendingCoverDataUrl` が「保存される表紙」
+  そのもので、保存時は `cover: pendingCoverDataUrl || null` とだけ書く。
+  ここに `|| b.cover` のようなフォールバックを足すと、表紙を削除しても消せなくなる。
+- **カードの `<img>` が読み込みに失敗したら本のアイコンに差し替える**
+  （`attachBookCardHandlers` の error ハンドラ）。差し替えるのは表示だけで `cover` の値は書き換えない。
+- **入力欄を隠している項目は、画面の値ではなく既存の値を持ち越す。**
+  「欲しい」で電子栞・評価を隠しているとき、画面の値で上書きすると読みかけのページ数が消える。
 - 保存系の関数（`dbPut` / `dbDelete` / `dbClear`）は自動で `notifyLocalChange()` を呼ぶ。
   sync.js の `window.hondanaOnLocalChange` がそれを拾って同期を予約する。
 - ローカル確認は `python -m http.server` → **localhost** で開く。file:// だと Service Worker が動かない。

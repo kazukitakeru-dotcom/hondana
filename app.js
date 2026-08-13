@@ -259,7 +259,10 @@ document.querySelectorAll('#statusFilter .filter-pill').forEach((pill) => {
 function renderTagFilter() {
   const row = document.getElementById('tagFilter');
   const tags = [...new Set(books.flatMap((b) => b.tags || []))].sort((a, b) => a.localeCompare(b, 'ja'));
-  if (!tags.length || sortMode === 'manual') {
+  // 隠すのは「矢印で棚順を編集している間」だけ。sortMode で判定すると、手動（棚順）で
+  // 普通に見ているときまでタグ行が消え、タグで絞ったまま手動に切り替えると
+  // 絞り込みを解除する手段が画面から無くなってしまう（本が消えたように見える）。
+  if (!tags.length || reorderEditing) {
     row.classList.add('hidden');
     row.innerHTML = '';
     return;
@@ -279,10 +282,10 @@ function renderTagFilter() {
 // ── 並び替え ──
 function isBarcodeSupported() { return 'BarcodeDetector' in window; }
 
-// 「手動（棚順）」に初めて入ったとき、order を持っていない本に順番を割り振っておく
+// 棚順を編集し始めるときに、order を 0,1,2… の連番に整える。
+// order を持っていない本（旧データ・バックアップからの復元）に番号を振るのと、
+// 本を消したあとに空いた番号を詰めるのを兼ねる。変わった本だけ書き込む。
 async function backfillOrder() {
-  const missing = books.some((b) => b.order === undefined || b.order === null);
-  if (!missing) return;
   const ordered = books.slice().sort((a, b) => {
     const oa = (a.order === undefined || a.order === null) ? Infinity : a.order;
     const ob = (b.order === undefined || b.order === null) ? Infinity : b.order;
@@ -342,6 +345,8 @@ function exitReorderEditing() {
   updateReorderUI();
   renderTagFilter();
   renderBooks();
+  // 編集中は同期を見送っている（sync.js の syncNow を参照）ので、抜けたところで改めて促す
+  notifyLocalChange();
 }
 
 document.getElementById('sortSelect').addEventListener('change', (e) => setSortMode(e.target.value));
@@ -392,8 +397,10 @@ function updateShelfStats() {
   const owned = books.filter((b) => b.status !== 'wishlist');
   const done = owned.filter((b) => b.status === 'done').length;
   const wishlist = books.length - owned.length;
-  if (!books.length) { el.textContent = ''; return; }
-  el.textContent = `📚 全 ${owned.length}冊 ・ 読了 ${done}冊` + (wishlist ? ` ・ 🛒 欲しい ${wishlist}冊` : '');
+  const parts = [];
+  if (owned.length) parts.push(`📚 全 ${owned.length}冊 ・ 読了 ${done}冊`);
+  if (wishlist) parts.push(`🛒 欲しい ${wishlist}冊`);
+  el.textContent = parts.join(' ・ ');
 }
 
 function renderBooks() {
@@ -467,7 +474,7 @@ function renderBookCard(b, showArrows) {
   return `<div class="book-card" data-id="${b.id}">
     <div class="book-cover-wrap ${b.status === 'wishlist' ? 'wishlist' : ''}">
       <div class="book-cover">
-        ${b.cover ? `<img src="${b.cover}" alt="${escHtml(b.title)}" loading="lazy">` : bookIcon()}
+        ${b.cover ? `<img src="${escHtml(b.cover)}" alt="${escHtml(b.title)}" loading="lazy">` : bookIcon()}
       </div>
       <button class="book-fav-btn ${b.favorite ? 'active' : ''}" data-fav="${b.id}" title="お気に入り" aria-label="お気に入り">★</button>
       ${moveHtml}
@@ -483,6 +490,16 @@ function renderBookCard(b, showArrows) {
 }
 
 function attachBookCardHandlers(grid, list, showArrows) {
+  // 表紙が読み込めなかったときは本のアイコンに差し替える。
+  // openBD の表紙は外部URLで Service Worker のキャッシュ対象外なので、
+  // オフラインだと読み込めない。これが無いと、ただの空欄になってしまう。
+  grid.querySelectorAll('.book-cover img').forEach((img) => {
+    img.addEventListener('error', () => {
+      const wrap = img.closest('.book-cover');
+      if (wrap) wrap.innerHTML = bookIcon();
+    });
+  });
+
   grid.querySelectorAll('.book-card').forEach((card) => {
     card.addEventListener('click', (e) => {
       if (e.target.closest('.book-fav-btn') || e.target.closest('.book-move-btn')) return;
@@ -543,15 +560,7 @@ function openBookModal(id) {
     btn.classList.toggle('active', parseInt(btn.dataset.value, 10) <= rating);
   });
 
-  const area = document.getElementById('coverUploadArea');
-  const existingImg = area.querySelector('img');
-  if (existingImg) existingImg.remove();
-  if (b && b.cover) {
-    const img = document.createElement('img');
-    img.src = b.cover;
-    area.appendChild(img);
-    pendingCoverDataUrl = b.cover;
-  }
+  setCoverPreview(b ? b.cover : null);
 
   updateProgressHint();
   openModal('bookModal');
@@ -567,12 +576,33 @@ document.querySelectorAll('#bookStatusSelector .status-btn').forEach((btn) => {
   });
 });
 
-// 「欲しい（まだ持っていない）」本には、電子栞や評価は意味を持たないので隠す
+// 「欲しい（まだ持っていない）」本には、電子栞や評価は意味を持たないので隠す。
+// ただし隠すだけで、すでに入っている値は消さない（保存処理の isWishlist 分岐を参照）。
 function updateFieldVisibilityForStatus(status) {
   const isWishlist = status === 'wishlist';
   document.getElementById('bookmarkFieldGroup').classList.toggle('hidden', isWishlist);
   document.getElementById('ratingFieldGroup').classList.toggle('hidden', isWishlist);
 }
+
+// 表紙プレビューの唯一の入口。pendingCoverDataUrl が「保存されるときの表紙」そのものになる。
+// null を渡すと表紙なしになる（＝「表紙を削除」もこれで表現できる）。
+function setCoverPreview(value) {
+  pendingCoverDataUrl = value || null;
+  const area = document.getElementById('coverUploadArea');
+  const existing = area.querySelector('img');
+  if (existing) existing.remove();
+  if (pendingCoverDataUrl) {
+    const img = document.createElement('img');
+    img.src = pendingCoverDataUrl;
+    area.appendChild(img);
+  }
+  document.getElementById('coverRemoveBtn').classList.toggle('hidden', !pendingCoverDataUrl);
+}
+
+document.getElementById('coverRemoveBtn').addEventListener('click', (e) => {
+  e.stopPropagation(); // 表紙エリアのクリック（＝ファイル選択）に伝播させない
+  setCoverPreview(null);
+});
 
 // 評価の★（今と同じ★をもう一度押すと0に戻す）
 document.querySelectorAll('#bookRatingSelector .rating-star').forEach((btn) => {
@@ -616,6 +646,16 @@ function cleanAuthorName(raw) {
     .join('、');
 }
 
+// 表紙のURLを取ってきて、アップロード画像と同じように縮小した data URL にする。
+// 取り込めない（CORS拒否・オフライン等）ときは例外を投げるので、呼び出し側でURLのまま扱う。
+async function localizeCoverUrl(url) {
+  const res = await fetch(url, { mode: 'cors' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const blob = await res.blob();
+  if (!blob.size) throw new Error('空の画像');
+  return await readAndResizeImage(blob);
+}
+
 // openBD（https://openbd.jp/）は国内書誌データベース。APIキー不要・CORS対応。
 async function handleIsbnLookup(rawIsbn) {
   const isbn = String(rawIsbn).replace(/[^0-9Xx]/g, '');
@@ -630,15 +670,13 @@ async function handleIsbnLookup(rawIsbn) {
     if (s.title) document.getElementById('bookTitleInput').value = s.title;
     if (s.author) document.getElementById('bookAuthorInput').value = cleanAuthorName(s.author);
     if (s.cover) {
-      // 表紙は openBD 側のURLをそのまま使う（同期の負担にならず、CORSの制約も受けない）。
-      // 手動でアップロードし直せば、いつでも縮小済みの自前画像に差し替えられる。
-      pendingCoverDataUrl = s.cover;
-      const area = document.getElementById('coverUploadArea');
-      const existing = area.querySelector('img');
-      if (existing) existing.remove();
-      const img = document.createElement('img');
-      img.src = s.cover;
-      area.appendChild(img);
+      // できれば表紙を端末に取り込む（縮小済みの data URL にする）。
+      // こうしておくとオフラインでも表示できるし、openBD 側のリンクが切れても残る。
+      // CORS で取り込めなかった場合だけ、URL のまま持つ（その場合オフラインでは
+      // 表示できないが、カード側で本のアイコンにフォールバックする）。
+      let cover = s.cover;
+      try { cover = await localizeCoverUrl(s.cover); } catch (e) { /* URLのまま使う */ }
+      setCoverPreview(cover);
     }
     showToast('書籍情報を取得しました');
   } catch (err) {
@@ -708,14 +746,7 @@ document.getElementById('coverFileInput').addEventListener('change', async (e) =
   const file = e.target.files[0];
   if (!file) return;
   try {
-    const dataUrl = await readAndResizeImage(file);
-    pendingCoverDataUrl = dataUrl;
-    const area = document.getElementById('coverUploadArea');
-    const existing = area.querySelector('img');
-    if (existing) existing.remove();
-    const img = document.createElement('img');
-    img.src = dataUrl;
-    area.appendChild(img);
+    setCoverPreview(await readAndResizeImage(file));
   } catch (err) {
     showToast('画像の読み込みに失敗しました');
   }
@@ -736,21 +767,32 @@ document.getElementById('saveBookBtn').addEventListener('click', async () => {
   const favorite = document.getElementById('bookFavoriteInput').checked;
   const statusBtn = document.querySelector('#bookStatusSelector .status-btn.active');
   const status = statusBtn ? statusBtn.dataset.value : 'unread';
-  // 「欲しい」はまだ持っていない本なので、電子栞や評価は持たせない
+  const existing = editingBookId ? books.find((x) => x.id === editingBookId) : null;
+  // 「欲しい」のときは電子栞と評価の入力欄を隠している。隠れている＝画面の値が当てにならないので、
+  // 元々入っていた値をそのまま持ち越す（消さない）。間違えて「欲しい」にして保存しても、
+  // 読みかけのページ数や評価が失われないようにするため。
   const isWishlist = status === 'wishlist';
-  const bookmarkPage = isWishlist ? 0 : parseInt(document.getElementById('bookBookmarkInput').value, 10) || 0;
-  const totalPages = isWishlist ? 0 : parseInt(document.getElementById('bookTotalPagesInput').value, 10) || 0;
-  const rating = isWishlist ? 0 : document.querySelectorAll('#bookRatingSelector .rating-star.active').length;
+  const bookmarkPage = isWishlist
+    ? (existing && existing.bookmarkPage) || 0
+    : parseInt(document.getElementById('bookBookmarkInput').value, 10) || 0;
+  const totalPages = isWishlist
+    ? (existing && existing.totalPages) || 0
+    : parseInt(document.getElementById('bookTotalPagesInput').value, 10) || 0;
+  const rating = isWishlist
+    ? (existing && existing.rating) || 0
+    : document.querySelectorAll('#bookRatingSelector .rating-star.active').length;
   const tagsRaw = document.getElementById('bookTagsInput').value.trim();
   const tags = tagsRaw ? [...new Set(tagsRaw.split(/[,、]+/).map((t) => t.trim()).filter(Boolean))] : [];
 
   if (editingBookId) {
-    const b = books.find((x) => x.id === editingBookId);
+    const b = existing;
     Object.assign(b, {
       title, author, memo, favorite, status, rating, tags,
       bookmarkPage: bookmarkPage || null,
       totalPages: totalPages || null,
-      cover: pendingCoverDataUrl || b.cover || null,
+      // pendingCoverDataUrl が「保存される表紙」そのもの（setCoverPreview が唯一の更新元）。
+      // b.cover へのフォールバックを入れると、表紙を削除しても消せなくなる。
+      cover: pendingCoverDataUrl || null,
     });
     await dbPut(STORES.books, b);
     showToast('本を更新しました');
