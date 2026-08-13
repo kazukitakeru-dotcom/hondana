@@ -45,6 +45,9 @@
       <button class="filter-pill" data-filter="favorite">★ お気に入り</button>
     </div>
 
+    <!-- Shelf pills (dynamic) -->
+    <div class="filter-row hidden" id="shelfFilter"></div>
+
     <!-- Tag pills (dynamic, hidden if no tags yet) -->
     <div class="filter-row hidden" id="tagFilter"></div>
 
@@ -100,7 +103,7 @@
         <button class="btn btn-sm btn-outline" style="width:auto;" id="isbnLookupBtn">取得</button>
       </div>
       <button class="btn btn-sm btn-outline" style="width:auto;margin-top:8px;" id="scanIsbnBtn">📷 バーコードを読み取る</button>
-      <p class="form-hint">openBD（国内書誌データベース）からタイトル・著者・表紙を取得します。通信が必要です。バーコード読み取りは対応端末のみ。</p>
+      <p class="form-hint">openBD（国内書誌データベース）からタイトル・著者・表紙を取得します。通信が必要です。バーコードは本の裏の<strong>上段（978から始まる方）</strong>を読み取ってください。</p>
     </div>
 
     <div class="form-group">
@@ -123,6 +126,11 @@
     <div class="form-group">
       <label class="form-label">著者</label>
       <input class="form-input" type="text" id="bookAuthorInput" placeholder="例：夏目漱石">
+    </div>
+
+    <div class="form-group" id="shelfFieldGroup">
+      <label class="form-label">棚</label>
+      <select class="form-select" id="bookShelfSelect"></select>
     </div>
 
     <div class="form-group">
@@ -196,6 +204,16 @@
   <div class="modal">
     <div class="modal-handle"></div>
     <h2 class="modal-title">設定</h2>
+
+    <div class="settings-group">
+      <div class="section-header"><span class="section-title">棚の管理</span></div>
+      <div id="shelfManagerList"></div>
+      <div class="add-tag-row mt-2">
+        <input class="form-input" type="text" id="newShelfInput" placeholder="新しい棚の名前（例：写真集棚）">
+        <button class="btn btn-sm btn-primary" style="width:auto;" id="addShelfBtn">追加</button>
+      </div>
+      <p class="sync-hint">棚を削除しても、中の本は「棚なし」として本棚に残ります。</p>
+    </div>
 
     <div class="settings-group">
       <div class="section-header"><span class="section-title">複数端末で同期</span></div>
@@ -285,7 +303,7 @@
 <div class="scan-overlay hidden" id="scanOverlay">
   <video id="scanVideo" playsinline muted></video>
   <div class="scan-frame"></div>
-  <p class="scan-hint">ISBNバーコードを枠内に合わせてください</p>
+  <p class="scan-hint">本の裏の<strong>上段</strong>（978から始まる方）のバーコードを枠内に合わせてください</p>
   <button class="scan-close-btn" id="scanCloseBtn" aria-label="閉じる">✕</button>
 </div>
 

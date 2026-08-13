@@ -1,7 +1,7 @@
 // ファイルを更新したら CACHE_NAME を必ず上げること。
 // 上げないと古いキャッシュが配られて、変更が端末に届かない。
 // 新しいファイルを足したら FILES_TO_CACHE にも追加する。
-const CACHE_NAME = 'hondana-v5';
+const CACHE_NAME = 'hondana-v7';
 const FILES_TO_CACHE = [
   './',
   './index.html',
@@ -11,7 +11,10 @@ const FILES_TO_CACHE = [
   './manifest.json',
   './icon.png',
   './icons/icon-192.png',
-  './icons/icon-512.png'
+  './icons/icon-512.png',
+  // バーコード読み取り用。app.js が使うときになって初めて読み込むが、
+  // オフラインでも読み取れるようにここで先にキャッシュしておく。
+  './vendor/zxing.min.js'
 ];
 
 self.addEventListener('install', e => {

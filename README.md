@@ -7,6 +7,8 @@
 
 - **欲しいリスト** — まだ持っていない、これから買いたい本も同じ棚に記録できる。表紙が破線の枠になり
   「🛒 欲しい」バッジが付くので、持っている本と区別できる。買ったら「未読」に変えるだけ
+- **棚で分ける** — 漫画棚・小説棚・絵本棚のように棚を作って本を振り分けられる。棚は追加・改名・
+  並べ替え・削除ができ、本棚の画面では棚ごとに見出しを付けて区切って表示される
 - **本棚らしい見た目** — 表紙を木の棚板の上に並べて表示する、実物の本棚っぽいUI
 - **表紙画像** — 本ごとに表紙を撮影・選択して登録。棚がひと目でわかる。差し替えも削除もできる
 - **ISBN・バーコードから自動入力** — ISBNを手入力、または対応端末ならカメラでバーコードを
@@ -32,17 +34,19 @@
 | `index.html` / `styles.css` | 画面 |
 | `app.js` | 全ロジック（DB・描画・表紙画像の縮小・バックアップ） |
 | `sync.js` | 複数端末同期（Supabase） |
+| `vendor/` | 唯一の外部ライブラリ（ZXing／バーコード読み取り用）。詳細は `vendor/README.md` |
 | `sw.js` / `manifest.json` / `icon.png` / `icons/` | PWA |
 | `supabase.sql` | Supabase のテーブル定義。ダッシュボードの SQL Editor に貼って実行する |
 
 ## データ
 
-IndexedDB `hondana-db`（**v1**）。`keyPath: 'id'`。
+IndexedDB `hondana-db`（**v2**）。すべて `keyPath: 'id'`。
 
 - `books` … 本1冊ごとに1レコード
-  `{ id, title, author, tags(string[]), cover(表紙のdata URLまたはopenBDのURL),
+  `{ id, title, author, shelfId(棚のid|null), tags(string[]), cover(表紙のdata URLまたはopenBDのURL),
      status('wishlist'|'unread'|'reading'|'done'), favorite, bookmarkPage(今のページ), totalPages(総ページ数),
      rating(0-5), memo, order(手動並び替え用), createdAt }`
+- `shelves` … 棚 `{ id, name, order }`。空の棚も持てるように本とは別のストアにしている
   - `status='wishlist'`（欲しいリスト）では `bookmarkPage` / `totalPages` / `rating` の入力欄を隠すが、
     すでに入っている値は消さずに保持する（間違えて切り替えても読みかけのページ数が失われない）
 

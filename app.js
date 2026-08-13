@@ -13,9 +13,15 @@ if ('serviceWorker' in navigator) {
 
 // ── DB ──
 const DB_NAME = 'hondana-db';
-const DB_VERSION = 1;
-const STORES = { books: 'books' };
+// v2 で shelves（棚）を追加。sync.js は DATA_STORES を総なめする作りなので、
+// ストアを足すだけで同期にも自動的に乗る（Supabase 側も store 列で区別しているso変更不要）。
+const DB_VERSION = 2;
+const STORES = { books: 'books', shelves: 'shelves' };
 const DATA_STORES = Object.values(STORES);
+
+// 初回起動時に用意する棚。空の棚も持てるように、本とは別のストアで管理している
+// （タグのように本から動的に集める方式だと、中身が0冊の棚を作れないため）。
+const DEFAULT_SHELVES = ['漫画棚', '小説棚', '絵本棚'];
 
 // 同期のための内部ストア。バックアップの書き出し・復元の対象にはしない。
 //   tombstones … 消したものの墓標。これが無いと、消した本が、まだ持っている端末から
@@ -136,7 +142,9 @@ async function pruneTombstones() {
 
 // ── State ──
 let books = [];
+let shelves = [];
 let currentFilter = 'all';
+let currentShelfFilter = null; // null=すべての棚 / 棚id / '__none__'=棚なし
 let currentTagFilter = null;
 let searchQuery = '';
 // 並び替えモードは「今回どの順で見るか」なので端末をまたいで持ち歩く必要はなく、
@@ -149,7 +157,8 @@ let editingBookId = null;
 let pendingCoverDataUrl = null;
 let confirmCallback = null;
 let toastTimer = null;
-let scanStream = null;
+let scanStream = null;   // 自分で開いたカメラ（BarcodeDetector経路）
+let zxingReader = null;  // ZXingが開いたカメラ（ZXing経路）
 
 function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -157,6 +166,26 @@ function uid() {
 
 async function loadAll() {
   books = await dbAll(STORES.books);
+  shelves = (await dbAll(STORES.shelves)).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+}
+
+// 初回だけ既定の棚を作る。ユーザーが全部消した状態と区別するため、
+// 「一度でも棚を作ったか」を localStorage に残して二度目以降は復活させない。
+const SHELVES_SEEDED_KEY = 'hondana_shelves_seeded_v1';
+async function seedDefaultShelvesOnce() {
+  if (localStorage.getItem(SHELVES_SEEDED_KEY)) return;
+  localStorage.setItem(SHELVES_SEEDED_KEY, '1');
+  if (shelves.length) return;
+  for (let i = 0; i < DEFAULT_SHELVES.length; i++) {
+    const shelf = { id: uid(), name: DEFAULT_SHELVES[i], order: i };
+    shelves.push(shelf);
+    await dbPut(STORES.shelves, shelf);
+  }
+}
+
+function shelfName(id) {
+  const s = shelves.find((x) => x.id === id);
+  return s ? s.name : null;
 }
 
 // ── Toast ──
@@ -254,6 +283,30 @@ document.querySelectorAll('#statusFilter .filter-pill').forEach((pill) => {
     renderBooks();
   });
 });
+
+// ── 棚フィルター ──
+function renderShelfFilter() {
+  const row = document.getElementById('shelfFilter');
+  const hasUnshelved = books.some((b) => !b.shelfId || !shelfName(b.shelfId));
+  if (!shelves.length || reorderEditing) {
+    row.classList.add('hidden');
+    row.innerHTML = '';
+    return;
+  }
+  row.classList.remove('hidden');
+  const pill = (val, label, active) =>
+    `<button class="filter-pill ${active ? 'active' : ''}" data-shelf="${escHtml(val)}">${escHtml(label)}</button>`;
+  row.innerHTML =
+    pill('', 'すべての棚', !currentShelfFilter) +
+    shelves.map((s) => pill(s.id, s.name, currentShelfFilter === s.id)).join('') +
+    (hasUnshelved ? pill('__none__', '棚なし', currentShelfFilter === '__none__') : '');
+  row.querySelectorAll('.filter-pill').forEach((p) => {
+    p.addEventListener('click', () => {
+      currentShelfFilter = p.dataset.shelf || null;
+      renderBooks();
+    });
+  });
+}
 
 // ── タグフィルター（本の登録内容から動的に作る） ──
 function renderTagFilter() {
@@ -376,8 +429,110 @@ async function moveBookOrder(id, dir, list) {
   renderBooks();
 }
 
+// ── 棚の管理（設定画面） ──
+function renderShelfManager() {
+  const list = document.getElementById('shelfManagerList');
+  if (!shelves.length) {
+    list.innerHTML = `<p class="sync-hint">棚がありません。下から追加できます。</p>`;
+    return;
+  }
+  list.innerHTML = shelves.map((s, i) => {
+    const count = books.filter((b) => b.shelfId === s.id).length;
+    return `<div class="shelf-manage-row" data-shelf-id="${escHtml(s.id)}">
+      <span class="shelf-manage-name">${escHtml(s.name)}<span class="shelf-manage-count">${count}冊</span></span>
+      <button class="shelf-manage-btn" data-move="${escHtml(s.id)}" data-dir="-1" ${i === 0 ? 'disabled' : ''} aria-label="上へ">▲</button>
+      <button class="shelf-manage-btn" data-move="${escHtml(s.id)}" data-dir="1" ${i === shelves.length - 1 ? 'disabled' : ''} aria-label="下へ">▼</button>
+      <button class="shelf-manage-btn" data-rename="${escHtml(s.id)}" aria-label="名前を変える">✎</button>
+      <button class="shelf-manage-btn danger" data-del="${escHtml(s.id)}" aria-label="削除">✕</button>
+    </div>`;
+  }).join('');
+
+  list.querySelectorAll('[data-move]').forEach((btn) => {
+    btn.addEventListener('click', () => moveShelf(btn.dataset.move, parseInt(btn.dataset.dir, 10)));
+  });
+  list.querySelectorAll('[data-rename]').forEach((btn) => {
+    btn.addEventListener('click', () => renameShelf(btn.dataset.rename));
+  });
+  list.querySelectorAll('[data-del]').forEach((btn) => {
+    btn.addEventListener('click', () => deleteShelf(btn.dataset.del));
+  });
+}
+
+async function addShelf() {
+  const input = document.getElementById('newShelfInput');
+  const name = input.value.trim();
+  if (!name) return;
+  if (shelves.some((s) => s.name === name)) { showToast('同じ名前の棚があります'); return; }
+  const shelf = { id: uid(), name, order: shelves.length };
+  shelves.push(shelf);
+  await dbPut(STORES.shelves, shelf);
+  input.value = '';
+  renderShelfManager();
+  renderBooks();
+  showToast(`「${name}」を追加しました`);
+}
+
+async function renameShelf(id) {
+  const shelf = shelves.find((s) => s.id === id);
+  if (!shelf) return;
+  const name = (prompt('棚の名前', shelf.name) || '').trim();
+  if (!name || name === shelf.name) return;
+  if (shelves.some((s) => s.name === name && s.id !== id)) { showToast('同じ名前の棚があります'); return; }
+  shelf.name = name;
+  await dbPut(STORES.shelves, shelf);
+  renderShelfManager();
+  renderBooks();
+}
+
+async function moveShelf(id, dir) {
+  const idx = shelves.findIndex((s) => s.id === id);
+  const newIdx = idx + dir;
+  if (idx < 0 || newIdx < 0 || newIdx >= shelves.length) return;
+  const [item] = shelves.splice(idx, 1);
+  shelves.splice(newIdx, 0, item);
+  for (let i = 0; i < shelves.length; i++) {
+    if (shelves[i].order !== i) {
+      shelves[i].order = i;
+      await dbPut(STORES.shelves, shelves[i]);
+    }
+  }
+  renderShelfManager();
+  renderBooks();
+}
+
+// 棚を消しても、中の本は消さない（「棚なし」に戻すだけ）。
+async function deleteShelf(id) {
+  const shelf = shelves.find((s) => s.id === id);
+  if (!shelf) return;
+  const count = books.filter((b) => b.shelfId === id).length;
+  const ok = await showConfirm(
+    '棚を削除',
+    count
+      ? `「${shelf.name}」を削除します。中の ${count}冊 は本棚に残り、「棚なし」になります。`
+      : `「${shelf.name}」を削除します。`,
+    '削除する'
+  );
+  if (!ok) return;
+  for (const b of books.filter((x) => x.shelfId === id)) {
+    b.shelfId = null;
+    await dbPut(STORES.books, b);
+  }
+  shelves = shelves.filter((s) => s.id !== id);
+  await dbDelete(STORES.shelves, id);
+  if (currentShelfFilter === id) currentShelfFilter = null;
+  renderShelfManager();
+  renderBooks();
+  showToast('棚を削除しました');
+}
+
+document.getElementById('addShelfBtn').addEventListener('click', addShelf);
+document.getElementById('newShelfInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') addShelf();
+});
+
 // ── 設定 ──
 document.getElementById('settingsBtn').addEventListener('click', () => {
+  renderShelfManager();
   openModal('settingsModal');
   if (typeof updateSyncUI === 'function') updateSyncUI();
 });
@@ -410,6 +565,7 @@ function renderBooks() {
   const manual = sortMode === 'manual';
   const showArrows = manual && reorderEditing;
 
+  renderShelfFilter();
   renderTagFilter();
   updateShelfStats();
 
@@ -422,21 +578,15 @@ function renderBooks() {
     else if (currentFilter === 'unread') matchFilter = b.status === 'unread';
     else if (currentFilter === 'done') matchFilter = b.status === 'done';
     else if (currentFilter === 'favorite') matchFilter = !!b.favorite;
+    let matchShelf = true;
+    if (currentShelfFilter === '__none__') matchShelf = !b.shelfId || !shelfName(b.shelfId);
+    else if (currentShelfFilter) matchShelf = b.shelfId === currentShelfFilter;
     const matchTag = !currentTagFilter || (b.tags || []).includes(currentTagFilter);
     const matchQ = !q || (b.title || '').includes(q) || (b.author || '').includes(q);
-    return matchFilter && matchTag && matchQ;
+    return matchFilter && matchShelf && matchTag && matchQ;
   });
 
-  if (manual) {
-    // 手動（棚順）は普段の閲覧でもそのまま使う並び。絞り込みと組み合わせても崩れない。
-    list.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-  } else if (sortMode === 'title') {
-    list.sort((a, b) => (a.title || '').localeCompare(b.title || '', 'ja'));
-  } else if (sortMode === 'progress') {
-    list.sort((a, b) => progressScore(b) - progressScore(a));
-  } else {
-    list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-  }
+  sortBookList(list);
 
   if (!list.length) {
     grid.innerHTML = '';
@@ -448,14 +598,54 @@ function renderBooks() {
   }
   empty.classList.add('hidden');
 
+  // 棚ごとに区切って描く。棚が1つも無いか、特定の棚だけを見ているときは区切らない
+  // （見出しを出しても情報が増えないので）。並び替えの編集中も全冊を平らに並べる。
+  const grouped = shelves.length && !currentShelfFilter && !showArrows;
+  grid.innerHTML = grouped ? renderGroupedShelves(list, showArrows) : renderShelfSection(list, showArrows);
+
+  attachBookCardHandlers(grid, list, showArrows);
+}
+
+function sortBookList(list) {
+  if (sortMode === 'manual') {
+    // 手動（棚順）は普段の閲覧でもそのまま使う並び。絞り込みと組み合わせても崩れない。
+    list.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  } else if (sortMode === 'title') {
+    list.sort((a, b) => (a.title || '').localeCompare(b.title || '', 'ja'));
+  } else if (sortMode === 'progress') {
+    list.sort((a, b) => progressScore(b) - progressScore(a));
+  } else {
+    list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  }
+  return list;
+}
+
+// 棚の並び順どおりに見出し＋本を出し、最後に「棚なし」をまとめる
+function renderGroupedShelves(list, showArrows) {
+  let html = '';
+  for (const shelf of shelves) {
+    const inShelf = list.filter((b) => b.shelfId === shelf.id);
+    if (!inShelf.length) continue;
+    html += `<div class="shelf-label">${escHtml(shelf.name)}<span class="shelf-label-count">${inShelf.length}</span></div>`;
+    html += renderShelfSection(inShelf, showArrows);
+  }
+  const unshelved = list.filter((b) => !b.shelfId || !shelfName(b.shelfId));
+  if (unshelved.length) {
+    // 棚が1つも使われていないなら、見出しを出さずそのまま並べる（導入直後の見た目を保つ）
+    if (html) html += `<div class="shelf-label">棚なし<span class="shelf-label-count">${unshelved.length}</span></div>`;
+    html += renderShelfSection(unshelved, showArrows);
+  }
+  return html;
+}
+
+// 本を SHELF_COLS 冊ずつの段に分け、各段の下に棚板を敷く
+function renderShelfSection(list, showArrows) {
   let html = '';
   for (let i = 0; i < list.length; i += SHELF_COLS) {
     const row = list.slice(i, i + SHELF_COLS);
     html += `<div class="shelf-row">${row.map((b) => renderBookCard(b, showArrows)).join('')}</div><div class="shelf-plank"></div>`;
   }
-  grid.innerHTML = html;
-
-  attachBookCardHandlers(grid, list, showArrows);
+  return html;
 }
 
 function renderBookCard(b, showArrows) {
@@ -541,6 +731,7 @@ function openBookModal(id) {
   document.getElementById('bookModalTitle').textContent = b ? '本を編集' : '本を追加';
   document.getElementById('bookTitleInput').value = b ? b.title : '';
   document.getElementById('bookAuthorInput').value = b ? (b.author || '') : '';
+  renderShelfSelect(b ? b.shelfId : null);
   document.getElementById('bookTagsInput').value = b && b.tags ? b.tags.join(', ') : '';
   document.getElementById('bookMemoInput').value = b ? (b.memo || '') : '';
   document.getElementById('bookBookmarkInput').value = b && b.bookmarkPage ? b.bookmarkPage : '';
@@ -582,6 +773,16 @@ function updateFieldVisibilityForStatus(status) {
   const isWishlist = status === 'wishlist';
   document.getElementById('bookmarkFieldGroup').classList.toggle('hidden', isWishlist);
   document.getElementById('ratingFieldGroup').classList.toggle('hidden', isWishlist);
+}
+
+// 編集画面の棚セレクト。棚が1つも無ければ行ごと隠す。
+function renderShelfSelect(selectedId) {
+  const group = document.getElementById('shelfFieldGroup');
+  const sel = document.getElementById('bookShelfSelect');
+  group.classList.toggle('hidden', !shelves.length);
+  sel.innerHTML = `<option value="">-- 棚に入れない --</option>` +
+    shelves.map((s) => `<option value="${escHtml(s.id)}">${escHtml(s.name)}</option>`).join('');
+  sel.value = selectedId && shelves.some((s) => s.id === selectedId) ? selectedId : '';
 }
 
 // 表紙プレビューの唯一の入口。pendingCoverDataUrl が「保存されるときの表紙」そのものになる。
@@ -691,36 +892,77 @@ document.getElementById('isbnLookupBtn').addEventListener('click', () => {
 });
 
 // ── バーコード読み取り ──
-// ブラウザ標準の Shape Detection API（BarcodeDetector）を使う。外部ライブラリは使わない。
-// 対応していない端末（iOS Safari など）では scanIsbnBtn 自体を隠すので、この関数は呼ばれない。
+// 2通りの経路がある。
+//   1. ブラウザ標準の BarcodeDetector（Shape Detection API）— Android/PCのChromeなど
+//   2. 同梱の ZXing（vendor/zxing.min.js）— iPhone(Safari)のように 1 が無い端末
+// 1 が使えるならそちらを優先し、ZXing は読み込まない（354KBを無駄に解析しないため）。
+
+// 日本の書籍のバーコードは2段組で、上段が 978/979 で始まるISBN、
+// 下段は 192… で始まる分類・価格コード。下段を読んでも書誌は引けないので採用しない
+// （読み飛ばして、上段が読めるまでスキャンを続ける）。
+function isIsbnBarcode(value) {
+  return /^97[89]\d{10}$/.test(String(value || '').trim());
+}
+
+function isCameraSupported() {
+  return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+}
+
+// ZXing は使うときになって初めて読み込む。
+// Service Worker がプリキャッシュしているので、2回目以降とオフラインでも読める。
+let _zxingLoading = null;
+function ensureZXing() {
+  if (window.ZXing) return Promise.resolve();
+  if (_zxingLoading) return _zxingLoading;
+  _zxingLoading = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'vendor/zxing.min.js';
+    s.onload = () => resolve();
+    s.onerror = () => { _zxingLoading = null; reject(new Error('読み取り用ファイルを読み込めませんでした')); };
+    document.head.appendChild(s);
+  });
+  return _zxingLoading;
+}
+
+let _scanStopped = false;
+
 async function startBarcodeScan() {
-  if (!isBarcodeSupported()) { showToast('この端末はバーコード読み取りに対応していません'); return; }
-  const overlay = document.getElementById('scanOverlay');
+  if (!isCameraSupported()) { showToast('この端末ではカメラを使えません'); return; }
   const video = document.getElementById('scanVideo');
+  _scanStopped = false;
+  document.getElementById('scanOverlay').classList.remove('hidden');
+  document.getElementById('scanCloseBtn').onclick = stopBarcodeScan;
+
   try {
-    scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+    if (isBarcodeSupported()) await scanWithBarcodeDetector(video);
+    else await scanWithZXing(video);
   } catch (e) {
-    showToast('カメラを使用できませんでした');
-    return;
+    stopBarcodeScan();
+    showToast(/Permission|NotAllowed/i.test(String(e && e.name) + String(e && e.message))
+      ? 'カメラの使用が許可されませんでした'
+      : 'カメラを使用できませんでした');
   }
+}
+
+// 見つかったコードを受け取る共通処理。ISBN以外なら false を返して読み取りを続けさせる。
+function onBarcodeFound(value) {
+  if (_scanStopped || !isIsbnBarcode(value)) return false;
+  stopBarcodeScan();
+  handleIsbnLookup(value);
+  return true;
+}
+
+async function scanWithBarcodeDetector(video) {
+  scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
   video.srcObject = scanStream;
   await video.play();
-  overlay.classList.remove('hidden');
 
-  const detector = new BarcodeDetector({ formats: ['ean_13', 'ean_8'] });
-  let stopped = false;
-  document.getElementById('scanCloseBtn').onclick = () => { stopped = true; stopBarcodeScan(); };
-
+  const detector = new BarcodeDetector({ formats: ['ean_13'] });
   const tick = async () => {
-    if (stopped) return;
+    if (_scanStopped) return;
     try {
-      const codes = await detector.detect(video);
-      if (codes.length) {
-        stopped = true;
-        const value = codes[0].rawValue;
-        stopBarcodeScan();
-        await handleIsbnLookup(value);
-        return;
+      for (const code of await detector.detect(video)) {
+        if (onBarcodeFound(code.rawValue)) return;
       }
     } catch (e) { /* 検出失敗はそのまま次のフレームへ */ }
     requestAnimationFrame(tick);
@@ -728,12 +970,32 @@ async function startBarcodeScan() {
   tick();
 }
 
+async function scanWithZXing(video) {
+  await ensureZXing();
+  if (_scanStopped) return; // 読み込んでいる間に閉じられた
+  const hints = new Map();
+  hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [ZXing.BarcodeFormat.EAN_13]);
+  zxingReader = new ZXing.BrowserMultiFormatReader(hints);
+  // カメラの開閉は ZXing 側に任せる（stopBarcodeScan の reset() で止まる）
+  await zxingReader.decodeFromConstraints(
+    { video: { facingMode: 'environment' } },
+    video,
+    (result) => { if (result) onBarcodeFound(result.getText()); }
+  );
+}
+
 function stopBarcodeScan() {
+  _scanStopped = true;
   document.getElementById('scanOverlay').classList.add('hidden');
   if (scanStream) {
     scanStream.getTracks().forEach((t) => t.stop());
     scanStream = null;
   }
+  if (zxingReader) {
+    try { zxingReader.reset(); } catch (e) { /* すでに停止済み */ }
+    zxingReader = null;
+  }
+  document.getElementById('scanVideo').srcObject = null;
 }
 
 document.getElementById('scanIsbnBtn').addEventListener('click', startBarcodeScan);
@@ -783,11 +1045,12 @@ document.getElementById('saveBookBtn').addEventListener('click', async () => {
     : document.querySelectorAll('#bookRatingSelector .rating-star.active').length;
   const tagsRaw = document.getElementById('bookTagsInput').value.trim();
   const tags = tagsRaw ? [...new Set(tagsRaw.split(/[,、]+/).map((t) => t.trim()).filter(Boolean))] : [];
+  const shelfId = document.getElementById('bookShelfSelect').value || null;
 
   if (editingBookId) {
     const b = existing;
     Object.assign(b, {
-      title, author, memo, favorite, status, rating, tags,
+      title, author, memo, favorite, status, rating, tags, shelfId,
       bookmarkPage: bookmarkPage || null,
       totalPages: totalPages || null,
       // pendingCoverDataUrl が「保存される表紙」そのもの（setCoverPreview が唯一の更新元）。
@@ -799,7 +1062,7 @@ document.getElementById('saveBookBtn').addEventListener('click', async () => {
   } else {
     const maxOrder = books.reduce((m, x) => Math.max(m, x.order ?? -1), -1);
     const b = {
-      id: uid(), title, author, memo, favorite, status, rating, tags,
+      id: uid(), title, author, memo, favorite, status, rating, tags, shelfId,
       bookmarkPage: bookmarkPage || null,
       totalPages: totalPages || null,
       cover: pendingCoverDataUrl || null,
@@ -830,7 +1093,7 @@ document.getElementById('cancelBookBtn').addEventListener('click', () => closeMo
 
 // ── バックアップ ──
 document.getElementById('exportBtn').addEventListener('click', () => {
-  const data = { app: 'hondana', version: 1, exportedAt: new Date().toISOString(), books };
+  const data = { app: 'hondana', version: 2, exportedAt: new Date().toISOString(), books, shelves };
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -857,8 +1120,12 @@ document.getElementById('importFileInput').addEventListener('change', async (e) 
     const text = await file.text();
     const data = JSON.parse(text);
     await dbClear(STORES.books);
+    await dbClear(STORES.shelves);
     books = Array.isArray(data.books) ? data.books : [];
+    // 棚を持たない古いバックアップ（version 1）からでも復元できるようにする
+    shelves = Array.isArray(data.shelves) ? data.shelves : [];
     for (const item of books) await dbPut(STORES.books, item);
+    for (const item of shelves) await dbPut(STORES.shelves, item);
     showToast('データを復元しました');
     renderBooks();
   } catch (err) {
@@ -869,10 +1136,14 @@ document.getElementById('importFileInput').addEventListener('change', async (e) 
 
 // ── 全削除 ──
 document.getElementById('clearAllBtn').addEventListener('click', async () => {
-  const ok = await showConfirm('全データを削除', '本棚のすべての本を削除しますか？この操作は取り消せません。');
+  const ok = await showConfirm('全データを削除', '本棚のすべての本と棚を削除しますか？この操作は取り消せません。');
   if (!ok) return;
   await dbClear(STORES.books);
+  await dbClear(STORES.shelves);
   books = [];
+  shelves = [];
+  currentShelfFilter = null;
+  renderShelfManager();
   showToast('全データを削除しました');
   renderBooks();
 });
@@ -884,12 +1155,15 @@ function escHtml(str) {
 
 // ── Init ──
 (async () => {
-  if (!isBarcodeSupported()) document.getElementById('scanIsbnBtn').classList.add('hidden');
+  // ZXing を同梱したので、BarcodeDetector が無い端末（iPhone）でも読み取れる。
+  // 隠すのはカメラそのものが使えないときだけ。
+  if (!isCameraSupported()) document.getElementById('scanIsbnBtn').classList.add('hidden');
   document.getElementById('sortSelect').value = sortMode;
   updateReorderUI();
   await openDB();
   await pruneTombstones();
   await loadAll();
+  await seedDefaultShelvesOnce();
   renderBooks();
   // sync.js が読み込まれていれば、ここから同期を始めさせる
   if (typeof window.hondanaOnReady === 'function') {

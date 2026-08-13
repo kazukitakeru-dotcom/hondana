@@ -4,6 +4,9 @@ GitHub Pages 想定の**静的サイト（ビルド無し・バックエンド�
 iPhone のホーム画面に追加して使う。classic script なので `import` は使わない。
 買い物メモ／クエストリスト等と同じ構成（PWA + IndexedDB + Supabase同期）を踏襲している。
 
+**外部ライブラリは `vendor/zxing.min.js` の1つだけ**（iPhoneでバーコードを読むため、
+利用者が了承の上で例外的に追加した）。それ以外は増やさないこと。npm・バンドラーは使わない。
+
 ## 構成
 
 | ファイル | 役割 |
@@ -14,7 +17,18 @@ iPhone のホーム画面に追加して使う。classic script なので `impor
 | `sync.js` | Supabase同期。外部ライブラリを使わず `fetch` で直接叩く |
 | `supabase.sql` | 同期用テーブル定義。何度実行しても壊れない |
 
-## データ（IndexedDB `hondana-db` v1）
+## データ（IndexedDB `hondana-db` v2）
+
+- `shelves` … 棚 `{ id, name, order }`。**本から動的に集めるのではなく独立したストア**にしてある
+  （タグ方式だと中身0冊の棚を作れないため）。本は `shelfId` で参照するので、棚を改名しても
+  本側を触らなくてよい。棚を削除しても本は消さず `shelfId = null`（＝「棚なし」）に落とす。
+  初回だけ `seedDefaultShelvesOnce()` が漫画棚／小説棚／絵本棚を作る。
+  「一度でも作ったか」を localStorage に残しているので、全部消しても復活しない。
+- **ストアを足すと同期は自動で追従する。** sync.js は `DATA_STORES` を総なめする作りで、
+  Supabase 側も `store` 列で区別しているため、テーブル定義（`supabase.sql`）の変更は不要。
+  ただし `DB_VERSION` を上げて `onupgradeneeded` でストアを作ること、
+  `loadAll()` / バックアップ / 復元 / 全削除にも足すのを忘れないこと。
+
 
 - `books` … 本のレコード。`status` は `'wishlist' | 'unread' | 'reading' | 'done'`
   - `'wishlist'`（欲しいリスト＝まだ持っていない本）のときは `bookmarkFieldGroup` / `ratingFieldGroup` を
@@ -41,10 +55,17 @@ iPhone のホーム画面に追加して使う。classic script なので `impor
 
 ## 本棚UI（棚板レイアウト）
 
-`renderBooks()` は本を3冊ずつ `.shelf-row` にまとめ、その直後に `.shelf-plank`（木の棚板、CSSのみ）を
-挟んで出力している。列数は `SHELF_COLS = 3` で固定（`#app` の `max-width:480px` に対して調整した値）。
-レスポンシブな `auto-fill` グリッドにしていないのは、棚板を挟む都合上、列数を固定して
-「何冊ごとに区切るか」をJS側で把握する必要があるため。
+`renderShelfSection()` が本を3冊ずつ `.shelf-row` にまとめ、その直後に `.shelf-plank`
+（木の棚板、CSSのみ）を挟んで出力する。列数は `SHELF_COLS = 3` で固定
+（`#app` の `max-width:480px` に対して調整した値）。レスポンシブな `auto-fill` グリッドに
+していないのは、棚板を挟む都合上、列数を固定して「何冊ごとに区切るか」をJS側で
+把握する必要があるため。
+
+棚が1つでもあり、特定の棚で絞り込んでおらず、並び替え編集中でもないときは
+`renderGroupedShelves()` が棚ごとに見出し（`.shelf-label`）を付けて区切る。
+並び替えは `sortBookList()` で**先に全体へ1回だけ**かけ、そのあと棚ごとに `filter` で振り分ける
+（`filter` は順序を保つので、結果として各棚の中が指定の順に並ぶ）。
+1つの棚に絞っているときは見出しを出さない（情報が増えないため）。
 
 ## 並び替え
 
@@ -78,9 +99,16 @@ iPhone のホーム画面に追加して使う。classic script なので `impor
 - 手入力：`handleIsbnLookup()` が openBD（`https://api.openbd.jp/v1/get?isbn=...`、キー不要・CORS対応）
   を叩いてタイトル・著者・表紙を埋める。著者は `姓,名,生年-没年` のような生データなので
   `cleanAuthorName()` で生没年と「著/訳/編/監修」の断片を落としている
-- カメラ読み取り：ブラウザ標準の `BarcodeDetector`（Shape Detection API）のみを使う。外部ライブラリは無し。
-  **iOS Safari は未対応**なので `isBarcodeSupported()` で判定し、非対応なら `scanIsbnBtn` 自体を隠す
-  （手入力＋取得ボタンは常にどの端末でも使える）
+- カメラ読み取り：**2経路ある**。`BarcodeDetector`（ブラウザ標準）が使えるならそちらを優先し、
+  無ければ同梱の ZXing（`vendor/zxing.min.js`）にフォールバックする。
+  **iOS Safari は `BarcodeDetector` 未対応**なので、iPhone では必ず ZXing 経路になる。
+  以前は非対応端末で `scanIsbnBtn` を隠していたため、iPhoneではボタンが見えず手入力しかできなかった。
+  今はカメラが無い端末でだけ隠す（`isCameraSupported()`）。
+- ZXing は `ensureZXing()` で**使うときに初めて**読み込む（354KBを毎回解析しないため）。
+  `sw.js` がプリキャッシュしているのでオフラインでも読める。
+  **これがこのアプリ唯一の外部ライブラリ**。経緯と更新手順は `vendor/README.md` を見ること。
+- **日本の書籍は2段バーコード**。上段が `978`/`979` で始まるISBN、下段は `192…` の分類・価格コード。
+  `isIsbnBarcode()` で上段だけを採用し、下段を読んだときは止めずにスキャンを続ける。
 - 表紙は `localizeCoverUrl()` で**端末に取り込むのを試みる**（fetch → 縮小 → data URL）。
   こうしておけばオフラインでも表示でき、openBD側のリンクが切れても残る。
   CORS拒否などで取り込めなかったときだけURLのまま持つ（その場合オフラインでは読めないが、
