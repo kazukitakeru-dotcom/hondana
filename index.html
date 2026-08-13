@@ -156,6 +156,20 @@
       <p class="form-hint">「欲しいリスト」はまだ持っていない、これから買いたい本。買ったら「未読」に変えます。</p>
     </div>
 
+    <div class="form-group">
+      <label class="form-label">持っている形</label>
+      <div class="status-selector" id="bookFormatSelector">
+        <button class="status-btn" data-value="paper">📕 紙</button>
+        <button class="status-btn" data-value="ebook">📱 電子</button>
+        <button class="status-btn" data-value="both">両方</button>
+      </div>
+    </div>
+
+    <div class="form-group hidden" id="storeFieldGroup">
+      <label class="form-label">電子書籍ストア</label>
+      <div class="store-picker" id="bookStorePicker"></div>
+    </div>
+
     <div class="form-group hidden" id="priceFieldGroup">
       <label class="form-label">価格（円）</label>
       <input class="form-input" type="number" id="bookPriceInput" placeholder="例：628" min="0" inputmode="numeric">
@@ -183,14 +197,9 @@
     </div>
 
     <div class="form-group hidden" id="seriesFieldGroup">
-      <label class="form-label">持っている巻</label>
-      <div class="isbn-row">
-        <input class="form-input" type="text" id="bookVolumesInput" placeholder="例：1-105　または　1-10, 12-20">
-        <button class="btn btn-sm btn-outline" style="width:auto;white-space:nowrap;" id="addNextVolumeBtn">＋次の巻</button>
-      </div>
-      <label class="form-label" style="margin-top:10px;">全巻数（分かれば・任意）</label>
+      <label class="form-label">全巻数（分かれば・任意）</label>
       <input class="form-input" type="number" id="bookTotalVolumesInput" placeholder="例：105" min="0" inputmode="numeric">
-      <p class="form-hint" id="volumeHint"></p>
+      <p class="form-hint" id="volumeHint">巻の追加や取り込みは、保存したあとシリーズを開いて行います。</p>
     </div>
 
     <div class="form-group" id="bookmarkFieldGroup">
@@ -229,6 +238,34 @@
       <button class="btn btn-primary" id="saveBookBtn">保存する</button>
       <button class="btn btn-outline" id="deleteBookBtn" style="display:none;color:var(--danger);border-color:var(--danger);">この本を削除</button>
       <button class="btn btn-outline" id="cancelBookBtn">キャンセル</button>
+    </div>
+  </div>
+</div>
+
+<!-- Series Modal（シリーズの中身＝巻の一覧） -->
+<div class="modal-overlay" id="seriesModal">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2 class="modal-title" id="seriesModalTitle">シリーズ</h2>
+    <p class="series-summary" id="seriesSummary"></p>
+
+    <div class="form-group">
+      <label class="form-label">持っている巻</label>
+      <div class="volume-grid" id="volumeGrid"></div>
+      <p class="form-hint">数字をタップするとその巻を開けます。点線の巻はまだ持っていない巻で、タップすると追加できます。</p>
+    </div>
+
+    <div class="form-group hidden" id="absorbGroup">
+      <label class="form-label">本棚にある本を取り込む</label>
+      <div id="absorbList"></div>
+      <p class="form-hint">シリーズを作る前に登録していた巻を、あとからここへ入れられます。</p>
+    </div>
+
+    <div class="modal-btns">
+      <button class="btn btn-primary" id="seriesAddNextBtn">＋ 次の巻を追加</button>
+      <button class="btn btn-outline" id="seriesAddManyBtn">まとめて追加（1〜10 など）</button>
+      <button class="btn btn-outline" id="seriesEditBtn">シリーズの設定</button>
+      <button class="btn btn-outline" id="seriesCloseBtn">閉じる</button>
     </div>
   </div>
 </div>

@@ -23,6 +23,15 @@ const DATA_STORES = Object.values(STORES);
 // （タグのように本から動的に集める方式だと、中身が0冊の棚を作れないため）。
 const DEFAULT_SHELVES = ['漫画棚', '小説棚', '絵本棚'];
 
+// 電子書籍ストアの選択肢。国内で使われている主なところ＋「その他」。
+// 自由入力にすると表記ゆれ（Kindle / きんどる / アマゾン）で集計も絞り込みもできなくなるので、
+// 決め打ちの一覧から選ぶ形にしている。
+const EBOOK_STORES = [
+  'Kindle', '楽天Kobo', 'BOOK☆WALKER', 'ebookjapan', 'honto',
+  'DMMブックス', 'コミックシーモア', 'Apple Books', 'Google Play ブックス',
+  'めちゃコミック', 'LINEマンガ', 'ピッコマ', 'ジャンプ+', 'その他',
+];
+
 // 同期のための内部ストア。バックアップの書き出し・復元の対象にはしない。
 //   tombstones … 消したものの墓標。これが無いと、消した本が、まだ持っている端末から
 //                押し戻されて復活する。
@@ -429,42 +438,94 @@ function parseVolumes(str) {
   return [...set].sort((a, b) => a - b);
 }
 
-// 巻番号の配列を「1-105, 108」の形に畳んで表示用の文字列にする
+// 巻番号の配列を「1〜4, 6〜8」の形に畳む。
+// これは**全体を一目で見るとき専用**の書き方。1冊ずつの一覧では畳まずに 1 2 3 … と並べる
+// （畳んだ表記だけだと「持ち物」に見えない、という指摘を受けたため）。
 function formatVolumeRanges(vols) {
   const out = [];
   let start = null, prev = null;
+  const push = () => out.push(start === prev ? `${start}` : `${start}〜${prev}`);
   for (const v of vols) {
     if (start === null) { start = prev = v; continue; }
     if (v === prev + 1) { prev = v; continue; }
-    out.push(start === prev ? `${start}` : `${start}-${prev}`);
+    push();
     start = prev = v;
   }
-  if (start !== null) out.push(start === prev ? `${start}` : `${start}-${prev}`);
+  if (start !== null) push();
   return out.join(', ');
 }
 
-// 持っている巻から「冊数・抜けている巻・次の巻・完結しているか」を出す。
+// ── シリーズは「入れ物」、巻は「1冊ずつの本」 ──
 //
-// missing（抜け）は**持っている範囲の中の穴だけ**にしている。
-// 全巻数から見た未購入分（例：20巻まで持っていて全72巻なら21〜72）まで missing に混ぜると、
-// 「11巻を買い逃している」のと「まだそこまで集めていない」が同じ表示になって読めなくなる。
-// 未購入分は remaining（残り何巻か）として別に返す。
-function volumeInfo(book) {
-  const vols = parseVolumes(book.volumes);
-  if (!vols.length) return null;
-  const owned = new Set(vols);
-  const max = vols[vols.length - 1];
+// 以前はシリーズ本に '1-105' という文字列を持たせるだけだった。それだと
+//   ・すでに棚にある2巻を後からシリーズへ入れられない
+//   ・1冊ずつの持ち物として見えない（棚として機能しない）
+// ので、巻を普通の本のレコードにして seriesId でシリーズ本にぶら下げる形にした。
+// 巻の本は本棚の一覧には出さず、シリーズを開いたときだけ並ぶ。
+
+function seriesVolumes(seriesId) {
+  return books.filter((b) => b.seriesId === seriesId)
+    .sort((a, b) => (a.volumeNo || 0) - (b.volumeNo || 0));
+}
+
+// missing（抜け）は**持っている範囲の中の穴だけ**。
+// 全巻数から見た未購入分（20巻まで持っていて全72巻なら以降）は remaining として別に返す。
+// 混ぜると「買い逃した巻」と「まだそこまで集めていない」が同じ表示になって読めなくなる。
+function seriesInfo(series) {
+  const vols = seriesVolumes(series.id);
+  const nums = vols.map((v) => v.volumeNo).filter((n) => n > 0);
+  const owned = new Set(nums);
+  const min = nums.length ? nums[0] : 0;
+  const max = nums.length ? nums[nums.length - 1] : 0;
   const missing = [];
-  for (let i = vols[0]; i < max; i++) if (!owned.has(i)) missing.push(i);
-  const total = book.totalVolumes || 0;
+  for (let i = min; i < max; i++) if (!owned.has(i)) missing.push(i);
+  const total = series.totalVolumes || 0;
   const remaining = total > max ? total - max : 0;
   const complete = total > 0 && !missing.length && max >= total;
   return {
-    vols, count: vols.length, max, missing, remaining, total, complete,
-    ranges: formatVolumeRanges(vols),
+    vols, nums, count: nums.length, min, max, missing, remaining, total, complete,
+    ranges: formatVolumeRanges(nums),
     // 次に買うのは、間が抜けていればその最初の巻、無ければ続きの巻
     next: complete ? null : (missing.length ? missing[0] : max + 1),
   };
+}
+
+// シリーズに属する1冊を作る
+function makeVolumeRecord(series, no) {
+  return {
+    id: uid(),
+    seriesId: series.id,
+    volumeNo: no,
+    title: `${series.title} ${no}`,
+    author: series.author || '',
+    shelfId: series.shelfId || null,
+    status: 'unread',
+    tags: [],
+    cover: null,
+    isSeries: false,
+    // 巻ごとに紙/電子は違いうるが、たいていは揃うのでシリーズの設定を引き継ぐ
+    format: series.format || 'paper',
+    store: series.store || null,
+    createdAt: Date.now(),
+  };
+}
+
+async function addVolumeRecord(series, no) {
+  if (!no || seriesVolumes(series.id).some((v) => v.volumeNo === no)) return null;
+  const v = makeVolumeRecord(series, no);
+  books.push(v);
+  await dbPut(STORES.books, v);
+  return v;
+}
+
+// 旧形式（volumes に '1-105' の文字列）を1冊ずつのレコードに移す。
+// 何度走っても同じ結果になるようにしてある。
+async function migrateSeriesVolumes() {
+  for (const s of books.filter((b) => b.isSeries && b.volumes)) {
+    for (const n of parseVolumes(s.volumes)) await addVolumeRecord(s, n);
+    s.volumes = '';
+    await dbPut(STORES.books, s);
+  }
 }
 
 function progressScore(b) {
@@ -632,6 +693,8 @@ function renderBooks() {
 
   const q = searchQuery.trim();
   let list = books.filter((b) => {
+    // シリーズの巻は本棚の一覧に出さない（シリーズを開いたときだけ並ぶ）
+    if (b.seriesId) return false;
     if (showArrows) return true; // 編集中は絞り込みを無視して全冊を対象にする
     let matchFilter = true;
     if (currentFilter === 'wishlist') matchFilter = b.status === 'wishlist';
@@ -713,10 +776,10 @@ function renderShelfSection(list, showArrows) {
 // カードの背丈が揃わなくなるため（巻の範囲・次の巻・抜けを「・」でつないで詰める）。
 function bookStatusLine(b, vi) {
   if (vi) {
+    if (!vi.count) return { text: '巻がありません', cls: 'missing' };
     const bits = [`${vi.ranges}巻`];
     if (vi.complete) bits.push('✓全巻');
     else if (vi.next) bits.push(`次${vi.next}`);
-    if (vi.missing.length) bits.push(`抜け${formatVolumeRanges(vi.missing)}`);
     return { text: bits.join(' ・ '), cls: vi.complete ? 'done' : (vi.missing.length ? 'missing' : '') };
   }
   if (b.status === 'wishlist') {
@@ -729,10 +792,28 @@ function bookStatusLine(b, vi) {
   return { text: '', cls: '' };
 }
 
+// 紙か電子かを表紙の左下に小さく出す。
+// シリーズは巻ごとに違うことがある（1〜5巻は紙、6巻から電子など）ので、
+// 中身を見て「紙」「電子」「紙+電子」を出し分ける。
+const FORMAT_MARK = { paper: '📕', ebook: '📱', both: '📕📱' };
+
+function formatBadge(b, vi) {
+  let format = b.format;
+  if (vi && vi.count) {
+    const set = new Set(vi.vols.map((v) => v.format || 'paper'));
+    if (set.has('both') || (set.has('paper') && set.has('ebook'))) format = 'both';
+    else format = [...set][0];
+  }
+  if (!format || format === 'paper') return ''; // 紙は既定なので出さない（うるさくなる）
+  return `<div class="book-format-badge">${FORMAT_MARK[format] || ''}</div>`;
+}
+
 function renderBookCard(b, showArrows) {
   const hasProgress = b.status === 'reading' && b.totalPages && b.bookmarkPage;
   const pct = hasProgress ? Math.min(100, Math.round((b.bookmarkPage / b.totalPages) * 100)) : null;
-  const vi = b.isSeries ? volumeInfo(b) : null;
+  const vi = b.isSeries ? seriesInfo(b) : null;
+  // シリーズの表紙が未設定なら、持っている巻の表紙を借りる
+  const cover = b.cover || (vi ? (vi.vols.find((v) => v.cover) || {}).cover : null);
   const tagsHtml = `<div class="book-tags">${(b.tags || []).slice(0, 2)
     .map((t) => `<span class="book-tag-chip">${escHtml(t)}</span>`).join('')}</div>`;
   // 読了のオン/オフはカード上のワンタップにはしていない（誤操作の元になるため）。
@@ -747,10 +828,11 @@ function renderBookCard(b, showArrows) {
   return `<div class="book-card" data-id="${b.id}">
     <div class="book-cover-wrap ${b.status === 'wishlist' ? 'wishlist' : ''}">
       <div class="book-cover">
-        ${b.cover ? `<img src="${escHtml(b.cover)}" alt="${escHtml(b.title)}" loading="lazy">` : bookIcon()}
+        ${cover ? `<img src="${escHtml(cover)}" alt="${escHtml(b.title)}" loading="lazy">` : bookIcon()}
       </div>
       <button class="book-fav-btn ${b.favorite ? 'active' : ''}" data-fav="${b.id}" title="お気に入り" aria-label="お気に入り">★</button>
       ${moveHtml}
+      ${formatBadge(b, vi)}
       ${vi ? `<div class="book-volume-badge">${vi.count}冊</div>` : ''}
       ${pct !== null ? `<div class="book-progress-track"><div class="book-progress-fill" style="width:${pct}%"></div></div>` : ''}
     </div>
@@ -775,7 +857,10 @@ function attachBookCardHandlers(grid, list, showArrows) {
   grid.querySelectorAll('.book-card').forEach((card) => {
     card.addEventListener('click', (e) => {
       if (e.target.closest('.book-fav-btn') || e.target.closest('.book-move-btn')) return;
-      openBookModal(card.dataset.id);
+      const b = books.find((x) => x.id === card.dataset.id);
+      // シリーズは中身（巻の一覧）を開く。設定はその中から辿れる
+      if (b && b.isSeries) openSeriesModal(b.id);
+      else openBookModal(card.dataset.id);
     });
   });
 
@@ -804,6 +889,155 @@ function bookIcon() {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>`;
 }
 
+// ══════════════════════════════════════════════
+//  シリーズの中身（巻の一覧）
+// ══════════════════════════════════════════════
+let openSeriesId = null;
+
+function openSeriesModal(seriesId) {
+  openSeriesId = seriesId;
+  renderSeriesModal();
+  openModal('seriesModal');
+}
+
+function renderSeriesModal() {
+  const series = books.find((b) => b.id === openSeriesId);
+  if (!series) { closeModal('seriesModal'); return; }
+  const info = seriesInfo(series);
+
+  document.getElementById('seriesModalTitle').textContent = series.title;
+
+  const bits = [];
+  if (info.count) {
+    bits.push(`<strong>${info.count}冊</strong> 持っています（${escHtml(info.ranges)}巻）`);
+    if (info.missing.length) bits.push(`抜けているのは <strong>${escHtml(formatVolumeRanges(info.missing))}巻</strong>`);
+    if (info.complete) bits.push('全巻そろっています');
+    else if (info.next) bits.push(`次に買うのは <span class="next">${info.next}巻</span>`);
+    if (info.remaining) bits.push(`全${info.total}巻まで残り ${info.remaining}冊`);
+    // 紙と電子が混ざっているときだけ内訳を出す
+    const paper = info.vols.filter((v) => v.format === 'paper' || !v.format || v.format === 'both').length;
+    const ebook = info.vols.filter((v) => v.format === 'ebook' || v.format === 'both').length;
+    if (paper && ebook) bits.push(`📕 紙 ${paper}冊 ・ 📱 電子 ${ebook}冊`);
+  } else {
+    bits.push('まだ1冊も入っていません。下のボタンから巻を追加できます。');
+  }
+  document.getElementById('seriesSummary').innerHTML = bits.join('<br>');
+
+  // 巻の一覧。持っている巻に加えて、間の抜けと（全巻数が分かっていれば）その先も出す。
+  // 抜けが一目で分かり、そのままタップで足せるようにするため。
+  const upper = Math.max(info.max, info.total || 0);
+  const owned = new Map(info.vols.map((v) => [v.volumeNo, v]));
+  const cells = [];
+  for (let n = 1; n <= upper; n++) {
+    const v = owned.get(n);
+    if (v) {
+      const mark = v.format === 'ebook' ? '📱' : (v.format === 'both' ? '📕📱' : '');
+      cells.push(`<button class="volume-chip owned ${v.status === 'done' ? 'read' : ''}" data-vol-open="${escHtml(v.id)}">${n}${mark ? `<span class="vol-mark">${mark}</span>` : ''}</button>`);
+    } else if (n >= info.min) {
+      cells.push(`<button class="volume-chip missing" data-vol-add="${n}">${n}</button>`);
+    }
+  }
+  document.getElementById('volumeGrid').innerHTML = cells.join('') || '<p class="form-hint">巻がありません。</p>';
+
+  document.getElementById('volumeGrid').querySelectorAll('[data-vol-open]').forEach((el) => {
+    el.addEventListener('click', () => {
+      closeModal('seriesModal');
+      openBookModal(el.dataset.volOpen);
+    });
+  });
+  document.getElementById('volumeGrid').querySelectorAll('[data-vol-add]').forEach((el) => {
+    el.addEventListener('click', async () => {
+      await addVolumeRecord(series, parseInt(el.dataset.volAdd, 10));
+      renderSeriesModal();
+      renderBooks();
+    });
+  });
+
+  renderAbsorbList(series);
+}
+
+// シリーズを作る前に1冊ずつ登録していた本を、あとからシリーズへ入れられるようにする。
+// 題名がシリーズ名で始まっていて、巻数が読み取れる本を候補に出す。
+function absorbCandidates(series) {
+  const key = normalizeTitleKey(splitTitleVolume(series.title).base || series.title);
+  if (!key) return [];
+  return books.filter((b) => {
+    if (b.seriesId || b.isSeries || b.id === series.id) return false;
+    const { base, vol } = splitTitleVolume(b.title);
+    return vol && normalizeTitleKey(base) === key;
+  }).map((b) => ({ book: b, vol: splitTitleVolume(b.title).vol }))
+    .sort((a, b) => a.vol - b.vol);
+}
+
+function renderAbsorbList(series) {
+  const group = document.getElementById('absorbGroup');
+  const list = document.getElementById('absorbList');
+  const cands = absorbCandidates(series);
+  group.classList.toggle('hidden', !cands.length);
+  if (!cands.length) return;
+
+  list.innerHTML = cands.map(({ book, vol }) =>
+    `<div class="absorb-row">
+      <span class="absorb-name">${escHtml(book.title)}</span>
+      <button class="absorb-btn" data-absorb="${escHtml(book.id)}" data-vol="${vol}">${vol}巻として入れる</button>
+    </div>`).join('');
+
+  list.querySelectorAll('[data-absorb]').forEach((el) => {
+    el.addEventListener('click', () => absorbBookIntoSeries(el.dataset.absorb, parseInt(el.dataset.vol, 10)));
+  });
+}
+
+// すでに棚にある本をシリーズの1冊にする。本は消さず、付け替えるだけ。
+async function absorbBookIntoSeries(bookId, vol) {
+  const series = books.find((b) => b.id === openSeriesId);
+  const book = books.find((b) => b.id === bookId);
+  if (!series || !book) return;
+  if (seriesVolumes(series.id).some((v) => v.volumeNo === vol)) {
+    showToast(`${vol}巻はすでにシリーズにあります`);
+    return;
+  }
+  book.seriesId = series.id;
+  book.volumeNo = vol;
+  if (!book.shelfId) book.shelfId = series.shelfId || null;
+  await dbPut(STORES.books, book);
+  renderSeriesModal();
+  renderBooks();
+  showToast(`${vol}巻としてシリーズに入れました`);
+}
+
+document.getElementById('seriesCloseBtn').addEventListener('click', () => closeModal('seriesModal'));
+
+document.getElementById('seriesAddNextBtn').addEventListener('click', async () => {
+  const series = books.find((b) => b.id === openSeriesId);
+  if (!series) return;
+  const info = seriesInfo(series);
+  if (!info.next) { showToast('全巻そろっています'); return; }
+  await addVolumeRecord(series, info.next);
+  renderSeriesModal();
+  renderBooks();
+  showToast(`${info.next}巻を追加しました`);
+});
+
+document.getElementById('seriesAddManyBtn').addEventListener('click', async () => {
+  const series = books.find((b) => b.id === openSeriesId);
+  if (!series) return;
+  const input = prompt('追加する巻を入力してください\n例: 1-10  /  1,2,3  /  12', '');
+  if (!input) return;
+  const nums = parseVolumes(input);
+  if (!nums.length) { showToast('巻を読み取れませんでした'); return; }
+  let added = 0;
+  for (const n of nums) if (await addVolumeRecord(series, n)) added++;
+  renderSeriesModal();
+  renderBooks();
+  showToast(added ? `${added}冊を追加しました` : 'すでにすべてあります');
+});
+
+document.getElementById('seriesEditBtn').addEventListener('click', () => {
+  const id = openSeriesId;
+  closeModal('seriesModal');
+  openBookModal(id);
+});
+
 // ── 本の追加・編集モーダル ──
 function openBookModal(id) {
   editingBookId = id;
@@ -814,13 +1048,14 @@ function openBookModal(id) {
   document.getElementById('bookTitleInput').value = b ? b.title : '';
   document.getElementById('bookAuthorInput').value = b ? (b.author || '') : '';
   renderShelfPicker(b ? b.shelfId : defaultShelfIdForNewBook(null));
+  setFormat(b ? b.format : 'paper');
+  renderStorePicker(b ? b.store : null);
   document.getElementById('bookTagsInput').value = b && b.tags ? b.tags.join(', ') : '';
   document.getElementById('bookMemoInput').value = b ? (b.memo || '') : '';
   document.getElementById('bookBookmarkInput').value = b && b.bookmarkPage ? b.bookmarkPage : '';
   document.getElementById('bookTotalPagesInput').value = b && b.totalPages ? b.totalPages : '';
   document.getElementById('bookFavoriteInput').checked = !!(b && b.favorite);
   document.getElementById('bookSeriesInput').checked = !!(b && b.isSeries);
-  document.getElementById('bookVolumesInput').value = b && b.volumes ? b.volumes : '';
   document.getElementById('bookTotalVolumesInput').value = b && b.totalVolumes ? b.totalVolumes : '';
   document.getElementById('bookPriceInput').value = b && b.price ? b.price : '';
   document.getElementById('deleteBookBtn').style.display = b ? '' : 'none';
@@ -860,11 +1095,46 @@ function currentModalStatus() {
   return btn ? btn.dataset.value : 'unread';
 }
 
+// ── 紙 / 電子 ──
+let pendingFormat = 'paper';
+let pendingStore = null;
+
+function setFormat(format) {
+  pendingFormat = format || 'paper';
+  document.querySelectorAll('#bookFormatSelector .status-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.value === pendingFormat);
+  });
+  updateModalFieldVisibility();
+}
+
+document.querySelectorAll('#bookFormatSelector .status-btn').forEach((btn) => {
+  btn.addEventListener('click', () => setFormat(btn.dataset.value));
+});
+
+function renderStorePicker(selected) {
+  pendingStore = EBOOK_STORES.includes(selected) ? selected : null;
+  const picker = document.getElementById('bookStorePicker');
+  picker.innerHTML = EBOOK_STORES.map((s) =>
+    `<button type="button" class="store-pick-btn ${pendingStore === s ? 'active' : ''}" data-store="${escHtml(s)}">${escHtml(s)}</button>`
+  ).join('');
+  picker.querySelectorAll('.store-pick-btn').forEach((el) => {
+    el.addEventListener('click', () => {
+      // もう一度押したら選択を外せる
+      pendingStore = pendingStore === el.dataset.store ? null : el.dataset.store;
+      picker.querySelectorAll('.store-pick-btn')
+        .forEach((x) => x.classList.toggle('active', x.dataset.store === pendingStore));
+    });
+  });
+}
+
 // 状態とシリーズ設定に応じて、意味を持たない入力欄を隠す。
 // **隠すだけで値は消さない**（保存処理側で、隠れている項目は既存値を持ち越す）。
 function updateModalFieldVisibility() {
   const isWishlist = currentModalStatus() === 'wishlist';
   const isSeries = document.getElementById('bookSeriesInput').checked;
+  // ストアは電子を持っているときだけ聞く
+  document.getElementById('storeFieldGroup')
+    .classList.toggle('hidden', pendingFormat !== 'ebook' && pendingFormat !== 'both');
   document.getElementById('bookmarkFieldGroup').classList.toggle('hidden', isWishlist);
   document.getElementById('ratingFieldGroup').classList.toggle('hidden', isWishlist);
   // 価格は「これから買う本の目安」なので欲しいリストのときだけ
@@ -877,14 +1147,17 @@ document.getElementById('bookSeriesInput').addEventListener('change', () => {
   updateVolumeHint();
 });
 
-// 「1-105」と打った結果がその場で分かるようにする（冊数・抜け・次の巻）
+// 編集画面には全巻数しか無い（巻の出し入れはシリーズを開いて行う）ので、
+// 今どうなっているかだけを一言で出す。
 function updateVolumeHint() {
   const hint = document.getElementById('volumeHint');
-  const info = volumeInfo({
-    volumes: document.getElementById('bookVolumesInput').value,
-    totalVolumes: parseInt(document.getElementById('bookTotalVolumesInput').value, 10) || 0,
-  });
-  if (!info) { hint.textContent = ''; return; }
+  const series = editingBookId ? books.find((b) => b.id === editingBookId) : null;
+  if (!series || !series.isSeries) {
+    hint.textContent = '保存したあと、シリーズを開いて巻を追加できます。';
+    return;
+  }
+  const info = seriesInfo({ ...series, totalVolumes: parseInt(document.getElementById('bookTotalVolumesInput').value, 10) || 0 });
+  if (!info.count) { hint.textContent = 'まだ巻が入っていません。シリーズを開いて追加できます。'; return; }
   const parts = [`${info.count}冊（${info.ranges}巻）`];
   if (info.missing.length) parts.push(`抜け: ${formatVolumeRanges(info.missing)}巻`);
   if (info.complete) parts.push('全巻そろっています');
@@ -892,24 +1165,7 @@ function updateVolumeHint() {
   if (info.remaining) parts.push(`全${info.total}巻まで残り ${info.remaining}冊`);
   hint.textContent = parts.join(' ・ ');
 }
-document.getElementById('bookVolumesInput').addEventListener('input', updateVolumeHint);
 document.getElementById('bookTotalVolumesInput').addEventListener('input', updateVolumeHint);
-
-// 巻を手で打たずに1冊足せるようにする。抜けがあればそこから埋める。
-document.getElementById('addNextVolumeBtn').addEventListener('click', () => {
-  const input = document.getElementById('bookVolumesInput');
-  const info = volumeInfo({
-    volumes: input.value,
-    totalVolumes: parseInt(document.getElementById('bookTotalVolumesInput').value, 10) || 0,
-  });
-  const next = info ? info.next : 1; // まだ何も無ければ1巻から
-  if (!next) { showToast('全巻そろっています'); return; }
-  const vols = parseVolumes(input.value);
-  vols.push(next);
-  vols.sort((a, b) => a - b);
-  input.value = formatVolumeRanges(vols);
-  updateVolumeHint();
-});
 
 // 編集画面の棚選び。棚が1つも無ければ行ごと隠す。
 // 以前は小さな <select> だったが「見逃しやすい」ため、状態と同じ大きさのボタンに変えた。
@@ -1089,21 +1345,14 @@ function findSeriesForTitle(title) {
   return book ? { book, vol } : null;
 }
 
-// シリーズに1巻ぶん足す
-async function addVolumeToSeries(book, vol) {
-  const vols = parseVolumes(book.volumes);
-  if (vols.includes(vol)) {
-    showToast(`「${book.title}」の${vol}巻はすでにあります`);
-    return;
-  }
-  vols.push(vol);
-  vols.sort((a, b) => a - b);
-  book.volumes = formatVolumeRanges(vols);
-  await dbPut(STORES.books, book);
+// シリーズに1巻ぶん足す（1冊のレコードとして作る）
+async function addVolumeToSeries(series, vol) {
+  const added = await addVolumeRecord(series, vol);
+  if (!added) { showToast(`「${series.title}」の${vol}巻はすでにあります`); return; }
   hideDuplicateWarning();
   closeModal('bookModal');
   renderBooks();
-  showToast(`「${book.title}」に${vol}巻を追加しました（${vols.length}冊）`);
+  showToast(`「${series.title}」に${vol}巻を追加しました（${seriesVolumes(series.id).length}冊）`);
 }
 
 const DUP_STATUS_LABEL = { wishlist: '欲しいリスト', unread: '未読', reading: '読書中', done: '読了' };
@@ -1139,8 +1388,7 @@ function showDuplicateWarning(dup) {
 function offerSeriesAction(rawTitle) {
   const hit = findSeriesForTitle(rawTitle);
   if (hit) {
-    const have = parseVolumes(hit.book.volumes);
-    const already = have.includes(hit.vol);
+    const already = seriesVolumes(hit.book.id).some((v) => v.volumeNo === hit.vol);
     showBanner(
       already
         ? `<strong>${escHtml(hit.book.title)}</strong> の ${hit.vol}巻 はすでに持っています。`
@@ -1158,14 +1406,24 @@ function offerSeriesAction(rawTitle) {
   showBanner(
     `<strong>${escHtml(base)}</strong> の ${vol}巻 のようです。シリーズとしてまとめますか？`,
     'シリーズにする',
-    () => {
-      document.getElementById('bookTitleInput').value = base;
-      document.getElementById('bookSeriesInput').checked = true;
-      document.getElementById('bookVolumesInput').value = String(vol);
-      updateModalFieldVisibility();
-      updateVolumeHint();
+    // シリーズ本を作り、その場で読み取った巻を1冊目として入れる
+    async () => {
+      const series = {
+        id: uid(), title: base, isSeries: true,
+        author: document.getElementById('bookAuthorInput').value.trim(),
+        shelfId: pendingShelfId || null,
+        status: 'unread', tags: [], cover: null,
+        order: books.reduce((m, x) => Math.max(m, x.order ?? -1), -1) + 1,
+        createdAt: Date.now(),
+      };
+      books.push(series);
+      await dbPut(STORES.books, series);
+      await addVolumeRecord(series, vol);
       hideDuplicateWarning();
-      showToast('シリーズにしました。保存してください');
+      closeModal('bookModal');
+      renderBooks();
+      openSeriesModal(series.id);
+      showToast(`「${base}」を作って${vol}巻を入れました`);
     }
   );
 }
@@ -1393,12 +1651,13 @@ document.getElementById('saveBookBtn').addEventListener('click', async () => {
   const tags = tagsRaw ? [...new Set(tagsRaw.split(/[,、]+/).map((t) => t.trim()).filter(Boolean))] : [];
   const shelfId = pendingShelfId || null;
   if (shelfId) localStorage.setItem(LAST_SHELF_KEY, shelfId);
+  const format = pendingFormat || 'paper';
+  // ストアの欄は電子のときしか出していないので、紙にしたら既存値を持ち越す
+  const store = (format === 'ebook' || format === 'both')
+    ? pendingStore
+    : ((existing && existing.store) || null);
   const isbn = document.getElementById('isbnInput').value.replace(/[^0-9Xx]/g, '') || null;
   const isSeries = document.getElementById('bookSeriesInput').checked;
-  // シリーズを解除しても巻の情報は消さない（また戻したときに残っているように）
-  const volumes = isSeries
-    ? document.getElementById('bookVolumesInput').value.trim()
-    : (existing && existing.volumes) || '';
   const totalVolumes = isSeries
     ? parseInt(document.getElementById('bookTotalVolumesInput').value, 10) || 0
     : (existing && existing.totalVolumes) || 0;
@@ -1407,7 +1666,7 @@ document.getElementById('saveBookBtn').addEventListener('click', async () => {
     const b = existing;
     Object.assign(b, {
       title, author, memo, favorite, status, rating, tags, shelfId, isbn,
-      isSeries, volumes, totalVolumes: totalVolumes || null,
+      isSeries, totalVolumes: totalVolumes || null, format, store,
       price: price || null,
       bookmarkPage: bookmarkPage || null,
       totalPages: totalPages || null,
@@ -1421,7 +1680,7 @@ document.getElementById('saveBookBtn').addEventListener('click', async () => {
     const maxOrder = books.reduce((m, x) => Math.max(m, x.order ?? -1), -1);
     const b = {
       id: uid(), title, author, memo, favorite, status, rating, tags, shelfId, isbn,
-      isSeries, volumes, totalVolumes: totalVolumes || null,
+      isSeries, totalVolumes: totalVolumes || null, format, store,
       price: price || null,
       bookmarkPage: bookmarkPage || null,
       totalPages: totalPages || null,
@@ -1527,6 +1786,7 @@ function escHtml(str) {
   await pruneTombstones();
   await loadAll();
   await seedDefaultShelvesOnce();
+  await migrateSeriesVolumes(); // 旧形式（'1-105' の文字列）を1冊ずつのレコードに移す
   renderBooks();
   // sync.js が読み込まれていれば、ここから同期を始めさせる
   if (typeof window.hondanaOnReady === 'function') {

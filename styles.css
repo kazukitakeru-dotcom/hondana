@@ -403,6 +403,20 @@ input, textarea { font-family: inherit; }
 .book-status-tag.missing { color: var(--danger); }
 .book-status-tag.price { color: var(--text-sub); }
 
+/* 紙／電子のしるし（表紙の左下） */
+.book-format-badge {
+  position: absolute;
+  left: 5px;
+  bottom: 5px;
+  padding: 1px 5px;
+  border-radius: var(--radius-full);
+  background: rgba(255,253,249,0.92);
+  font-size: 9px;
+  line-height: 1.5;
+  letter-spacing: -1px;
+  box-shadow: var(--shadow-sm);
+}
+
 /* シリーズの巻数バッジ（表紙の右下） */
 .book-volume-badge {
   position: absolute;
@@ -617,6 +631,113 @@ input, textarea { font-family: inherit; }
 }
 
 .cover-upload-area input { display: none; }
+
+/* ── シリーズの中身 ── */
+.series-summary {
+  font-size: 13px;
+  color: var(--text-sub);
+  line-height: 1.6;
+  margin: -8px 0 18px;
+  padding: 12px 14px;
+  background: var(--surface2);
+  border-radius: var(--radius-sm);
+}
+.series-summary strong { color: var(--primary); font-weight: 700; }
+.series-summary .next { color: var(--accent); font-weight: 700; }
+
+/* 巻は1冊ずつ数字で並べる（畳んだ「1〜4」表記は上の要約だけで使う） */
+.volume-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));
+  gap: 8px;
+}
+
+.volume-chip {
+  position: relative;
+  height: 46px;
+  border-radius: var(--radius-sm);
+  border: 1.5px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 15px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition);
+}
+.volume-chip:active { transform: scale(0.94); }
+.volume-chip.owned { background: var(--primary-light); border-color: var(--primary); color: var(--primary); }
+.volume-chip.owned.read { background: var(--done-light); border-color: var(--done); color: var(--done); }
+/* まだ持っていない巻。タップで足せる */
+.volume-chip.missing {
+  border-style: dashed;
+  border-color: var(--text-muted);
+  color: var(--text-muted);
+  background: transparent;
+  font-weight: 400;
+}
+
+.vol-mark {
+  position: absolute;
+  right: 2px;
+  bottom: 1px;
+  font-size: 8px;
+  letter-spacing: -1px;
+  line-height: 1;
+}
+
+/* 取り込み候補 */
+.absorb-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--border);
+}
+.absorb-row:last-child { border-bottom: none; }
+.absorb-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.absorb-btn {
+  flex-shrink: 0;
+  height: 32px;
+  padding: 0 12px;
+  border: 1.5px solid var(--primary);
+  border-radius: var(--radius-full);
+  background: var(--primary-light);
+  color: var(--primary);
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* 電子書籍ストア。数が多いので棚より小さめのボタンで折り返す */
+.store-picker { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.store-pick-btn {
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: var(--radius-full);
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--text-sub);
+  transition: all var(--transition);
+}
+.store-pick-btn.active {
+  background: var(--primary-light);
+  border-color: var(--primary);
+  color: var(--primary);
+  font-weight: 700;
+}
 
 /* Shelf picker（小さな select だと見逃されるので、状態と同じ大きさのボタンにしてある） */
 .shelf-picker { display: flex; flex-wrap: wrap; gap: 8px; }
