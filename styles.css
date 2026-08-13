@@ -99,6 +99,13 @@ input, textarea { font-family: inherit; }
 .header-icon-btn:hover { background: var(--surface2); color: var(--primary); }
 .header-icon-btn:disabled { opacity: .3; pointer-events: none; }
 
+/* バーコード読み取りは書店で使う目玉機能なので、他のアイコンより目立たせる */
+.header-icon-btn.scan {
+  background: var(--primary-light);
+  color: var(--primary);
+}
+.header-icon-btn.scan:active { transform: scale(0.92); }
+
 /* ── Filter pills ── */
 .filter-row {
   display: flex;

@@ -1090,9 +1090,13 @@ function ensureZXing() {
 }
 
 let _scanStopped = false;
+// ホーム画面から読み取ったときは、成功して初めて追加画面を開く。
+// 先に開いてしまうと、読み取りをやめたときに空の追加画面が残って邪魔になる。
+let _scanOpensModal = false;
 
-async function startBarcodeScan() {
+async function startBarcodeScan(opts = {}) {
   if (!isCameraSupported()) { showToast('この端末ではカメラを使えません'); return; }
+  _scanOpensModal = !!opts.openModal;
   const video = document.getElementById('scanVideo');
   _scanStopped = false;
   document.getElementById('scanOverlay').classList.remove('hidden');
@@ -1113,6 +1117,8 @@ async function startBarcodeScan() {
 function onBarcodeFound(value) {
   if (_scanStopped || !isIsbnBarcode(value)) return false;
   stopBarcodeScan();
+  // openBookModal は入力欄を初期化するので、必ず読み取り結果を入れる前に呼ぶ
+  if (_scanOpensModal) openBookModal(null);
   handleIsbnLookup(value);
   return true;
 }
@@ -1163,7 +1169,10 @@ function stopBarcodeScan() {
   document.getElementById('scanVideo').srcObject = null;
 }
 
-document.getElementById('scanIsbnBtn').addEventListener('click', startBarcodeScan);
+// 追加画面の中から（すでに画面が開いているので開き直さない）
+document.getElementById('scanIsbnBtn').addEventListener('click', () => startBarcodeScan());
+// ホーム画面から（書店で「持ってたっけ？」を確認する用。読み取れたら追加画面が開く）
+document.getElementById('headerScanBtn').addEventListener('click', () => startBarcodeScan({ openModal: true }));
 
 // 表紙画像
 document.getElementById('coverUploadArea').addEventListener('click', () => {
@@ -1339,7 +1348,10 @@ function escHtml(str) {
 (async () => {
   // ZXing を同梱したので、BarcodeDetector が無い端末（iPhone）でも読み取れる。
   // 隠すのはカメラそのものが使えないときだけ。
-  if (!isCameraSupported()) document.getElementById('scanIsbnBtn').classList.add('hidden');
+  if (!isCameraSupported()) {
+    document.getElementById('scanIsbnBtn').classList.add('hidden');
+    document.getElementById('headerScanBtn').classList.add('hidden');
+  }
   document.getElementById('sortSelect').value = sortMode;
   updateReorderUI();
   await openDB();
