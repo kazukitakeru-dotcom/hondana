@@ -137,7 +137,7 @@
 
     <div class="form-group" id="shelfFieldGroup">
       <label class="form-label">棚</label>
-      <select class="form-select" id="bookShelfSelect"></select>
+      <div class="shelf-picker" id="bookShelfPicker"></div>
     </div>
 
     <div class="form-group">
@@ -184,7 +184,10 @@
 
     <div class="form-group hidden" id="seriesFieldGroup">
       <label class="form-label">持っている巻</label>
-      <input class="form-input" type="text" id="bookVolumesInput" placeholder="例：1-105　または　1-10, 12-20">
+      <div class="isbn-row">
+        <input class="form-input" type="text" id="bookVolumesInput" placeholder="例：1-105　または　1-10, 12-20">
+        <button class="btn btn-sm btn-outline" style="width:auto;white-space:nowrap;" id="addNextVolumeBtn">＋次の巻</button>
+      </div>
       <label class="form-label" style="margin-top:10px;">全巻数（分かれば・任意）</label>
       <input class="form-input" type="number" id="bookTotalVolumesInput" placeholder="例：105" min="0" inputmode="numeric">
       <p class="form-hint" id="volumeHint"></p>
