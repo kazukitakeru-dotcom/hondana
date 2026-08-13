@@ -6,9 +6,15 @@
 ## できること
 
 - **欲しいリスト** — まだ持っていない、これから買いたい本も同じ棚に記録できる。表紙が破線の枠になり
-  「🛒 欲しい」バッジが付くので、持っている本と区別できる。買ったら「未読」に変えるだけ
+  「🛒 欲しい」バッジが付くので、持っている本と区別できる。買ったら「未読」に変えるだけ。
+  価格も記録しておける（合計は出さない）
 - **棚で分ける** — 漫画棚・小説棚・絵本棚のように棚を作って本を振り分けられる。棚は追加・改名・
   並べ替え・削除ができ、本棚の画面では棚ごとに見出しを付けて区切って表示される
+- **シリーズ・巻数** — 漫画などを1冊ずつ登録せず「ワンピース 1-105巻」のようにまとめて持てる。
+  持っている巻を `1-105` や `1-10, 12-20` と書くと、冊数・**間で抜けている巻**・次に買う巻を出す。
+  全巻数を入れておけば「全72巻まで残り52冊」「全巻そろい」も分かる
+- **重複チェック** — バーコードを読んだ時点で、すでに持っている本／欲しいリストにある本なら知らせる。
+  欲しいリストの本だったときは、その場で「買ったので未読にする」に切り替えられる
 - **本棚らしい見た目** — 表紙を木の棚板の上に並べて表示する、実物の本棚っぽいUI
 - **表紙画像** — 本ごとに表紙を撮影・選択して登録。棚がひと目でわかる。差し替えも削除もできる
 - **ISBN・バーコードから自動入力** — ISBNを手入力、または対応端末ならカメラでバーコードを
@@ -43,8 +49,10 @@
 IndexedDB `hondana-db`（**v2**）。すべて `keyPath: 'id'`。
 
 - `books` … 本1冊ごとに1レコード
-  `{ id, title, author, shelfId(棚のid|null), tags(string[]), cover(表紙のdata URLまたはopenBDのURL),
-     status('wishlist'|'unread'|'reading'|'done'), favorite, bookmarkPage(今のページ), totalPages(総ページ数),
+  `{ id, title, author, isbn, shelfId(棚のid|null), tags(string[]), cover(表紙のdata URLまたはopenBDのURL),
+     status('wishlist'|'unread'|'reading'|'done'), favorite, price(欲しいリスト用),
+     isSeries, volumes('1-105'のような文字列), totalVolumes,
+     bookmarkPage(今のページ), totalPages(総ページ数),
      rating(0-5), memo, order(手動並び替え用), createdAt }`
 - `shelves` … 棚 `{ id, name, order }`。空の棚も持てるように本とは別のストアにしている
   - `status='wishlist'`（欲しいリスト）では `bookmarkPage` / `totalPages` / `rating` の入力欄を隠すが、

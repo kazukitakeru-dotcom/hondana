@@ -377,6 +377,22 @@ input, textarea { font-family: inherit; }
 }
 .book-status-tag.done { color: var(--done); }
 .book-status-tag.wishlist { color: var(--text-sub); }
+.book-status-tag.missing { color: var(--danger); }
+.book-status-tag.price { color: var(--text-sub); }
+
+/* シリーズの巻数バッジ（表紙の右下） */
+.book-volume-badge {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  padding: 2px 7px;
+  border-radius: var(--radius-full);
+  background: rgba(43,36,28,0.82);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .02em;
+}
 
 .book-tags { display: flex; gap: 4px; flex-wrap: wrap; }
 .book-tag-chip {
@@ -839,6 +855,33 @@ input, textarea { font-family: inherit; }
 /* ── ISBN lookup ── */
 .isbn-row { display: flex; gap: 8px; }
 .isbn-row .form-input { flex: 1; }
+
+/* 重複警告（すでに持っている本を読み取ったとき） */
+.dup-warning {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-light);
+  border: 1.5px solid var(--accent);
+}
+.dup-warning-text { flex: 1; min-width: 140px; font-size: 13px; color: var(--text); line-height: 1.5; }
+.dup-warning-text strong { font-weight: 700; }
+.dup-warning-btn {
+  flex-shrink: 0;
+  height: 32px;
+  padding: 0 14px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  color: white;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+}
 
 /* ── Barcode scan overlay ── */
 .scan-overlay {

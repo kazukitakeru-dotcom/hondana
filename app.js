@@ -406,6 +406,67 @@ document.getElementById('sortSelect').addEventListener('change', (e) => setSortM
 document.getElementById('reorderEditBtn').addEventListener('click', enterReorderEditing);
 document.getElementById('sortDoneBtn').addEventListener('click', exitReorderEditing);
 
+// ── シリーズの巻数 ──
+// 「1-105」「1-10, 12-20」のような入力を巻番号の配列にする。
+// 抜けている巻を出したいので、範囲のまま持たず1巻ずつに展開している。
+const VOLUME_MAX_SPAN = 3000; // 打ち間違い（1-99999 等）でメモリを食い潰さないための上限
+
+function parseVolumes(str) {
+  const set = new Set();
+  for (const part of String(str || '').split(/[,、\s]+/)) {
+    if (!part) continue;
+    const range = part.match(/^(\d+)\s*[-–—~〜]\s*(\d+)$/);
+    if (range) {
+      let a = parseInt(range[1], 10);
+      let b = parseInt(range[2], 10);
+      if (a > b) [a, b] = [b, a];
+      if (b - a > VOLUME_MAX_SPAN) continue;
+      for (let i = a; i <= b; i++) set.add(i);
+    } else if (/^\d+$/.test(part)) {
+      set.add(parseInt(part, 10));
+    }
+  }
+  return [...set].sort((a, b) => a - b);
+}
+
+// 巻番号の配列を「1-105, 108」の形に畳んで表示用の文字列にする
+function formatVolumeRanges(vols) {
+  const out = [];
+  let start = null, prev = null;
+  for (const v of vols) {
+    if (start === null) { start = prev = v; continue; }
+    if (v === prev + 1) { prev = v; continue; }
+    out.push(start === prev ? `${start}` : `${start}-${prev}`);
+    start = prev = v;
+  }
+  if (start !== null) out.push(start === prev ? `${start}` : `${start}-${prev}`);
+  return out.join(', ');
+}
+
+// 持っている巻から「冊数・抜けている巻・次の巻・完結しているか」を出す。
+//
+// missing（抜け）は**持っている範囲の中の穴だけ**にしている。
+// 全巻数から見た未購入分（例：20巻まで持っていて全72巻なら21〜72）まで missing に混ぜると、
+// 「11巻を買い逃している」のと「まだそこまで集めていない」が同じ表示になって読めなくなる。
+// 未購入分は remaining（残り何巻か）として別に返す。
+function volumeInfo(book) {
+  const vols = parseVolumes(book.volumes);
+  if (!vols.length) return null;
+  const owned = new Set(vols);
+  const max = vols[vols.length - 1];
+  const missing = [];
+  for (let i = vols[0]; i < max; i++) if (!owned.has(i)) missing.push(i);
+  const total = book.totalVolumes || 0;
+  const remaining = total > max ? total - max : 0;
+  const complete = total > 0 && !missing.length && max >= total;
+  return {
+    vols, count: vols.length, max, missing, remaining, total, complete,
+    ranges: formatVolumeRanges(vols),
+    // 次に買うのは、間が抜けていればその最初の巻、無ければ続きの巻
+    next: complete ? null : (missing.length ? missing[0] : max + 1),
+  };
+}
+
 function progressScore(b) {
   if (b.status === 'done') return 1;
   if (b.totalPages && b.bookmarkPage) return Math.min(0.999, b.bookmarkPage / b.totalPages);
@@ -651,6 +712,7 @@ function renderShelfSection(list, showArrows) {
 function renderBookCard(b, showArrows) {
   const hasProgress = b.status === 'reading' && b.totalPages && b.bookmarkPage;
   const pct = hasProgress ? Math.min(100, Math.round((b.bookmarkPage / b.totalPages) * 100)) : null;
+  const vi = b.isSeries ? volumeInfo(b) : null;
   const tagsHtml = (b.tags && b.tags.length)
     ? `<div class="book-tags">${b.tags.slice(0, 2).map((t) => `<span class="book-tag-chip">${escHtml(t)}</span>`).join('')}</div>`
     : '';
@@ -668,13 +730,19 @@ function renderBookCard(b, showArrows) {
       </div>
       <button class="book-fav-btn ${b.favorite ? 'active' : ''}" data-fav="${b.id}" title="お気に入り" aria-label="お気に入り">★</button>
       ${moveHtml}
+      ${vi ? `<div class="book-volume-badge">${vi.count}冊</div>` : ''}
       ${pct !== null ? `<div class="book-progress-track"><div class="book-progress-fill" style="width:${pct}%"></div></div>` : ''}
     </div>
     <div class="book-title">${escHtml(b.title)}</div>
     ${b.author ? `<div class="book-author">${escHtml(b.author)}</div>` : ''}
-    ${b.status === 'reading' && b.bookmarkPage ? `<div class="book-status-tag">🔖 ${b.bookmarkPage}${b.totalPages ? ' / ' + b.totalPages : ''}p</div>` : ''}
+    ${vi ? `<div class="book-status-tag">${escHtml(vi.ranges)}巻</div>` : ''}
+    ${vi && vi.complete ? `<div class="book-status-tag done">✓ 全巻そろい</div>` : ''}
+    ${vi && vi.next ? `<div class="book-status-tag">次は ${vi.next}巻</div>` : ''}
+    ${vi && vi.missing.length ? `<div class="book-status-tag missing">抜け ${escHtml(formatVolumeRanges(vi.missing))}巻</div>` : ''}
+    ${!vi && b.status === 'reading' && b.bookmarkPage ? `<div class="book-status-tag">🔖 ${b.bookmarkPage}${b.totalPages ? ' / ' + b.totalPages : ''}p</div>` : ''}
     ${b.status === 'done' ? `<div class="book-status-tag done">✓ 読了</div>` : ''}
     ${b.status === 'wishlist' ? `<div class="book-status-tag wishlist">🛒 欲しい</div>` : ''}
+    ${b.status === 'wishlist' && b.price ? `<div class="book-status-tag price">¥${Number(b.price).toLocaleString()}</div>` : ''}
     ${tagsHtml}
   </div>`;
 }
@@ -737,14 +805,20 @@ function openBookModal(id) {
   document.getElementById('bookBookmarkInput').value = b && b.bookmarkPage ? b.bookmarkPage : '';
   document.getElementById('bookTotalPagesInput').value = b && b.totalPages ? b.totalPages : '';
   document.getElementById('bookFavoriteInput').checked = !!(b && b.favorite);
+  document.getElementById('bookSeriesInput').checked = !!(b && b.isSeries);
+  document.getElementById('bookVolumesInput').value = b && b.volumes ? b.volumes : '';
+  document.getElementById('bookTotalVolumesInput').value = b && b.totalVolumes ? b.totalVolumes : '';
+  document.getElementById('bookPriceInput').value = b && b.price ? b.price : '';
   document.getElementById('deleteBookBtn').style.display = b ? '' : 'none';
-  document.getElementById('isbnInput').value = '';
+  document.getElementById('isbnInput').value = b && b.isbn ? b.isbn : '';
+  hideDuplicateWarning();
 
   const status = (b && b.status) || 'unread';
   document.querySelectorAll('#bookStatusSelector .status-btn').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.value === status);
   });
-  updateFieldVisibilityForStatus(status);
+  updateModalFieldVisibility();
+  updateVolumeHint();
 
   const rating = (b && b.rating) || 0;
   document.querySelectorAll('#bookRatingSelector .rating-star').forEach((btn) => {
@@ -763,17 +837,49 @@ document.querySelectorAll('#bookStatusSelector .status-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('#bookStatusSelector .status-btn').forEach((b) => b.classList.remove('active'));
     btn.classList.add('active');
-    updateFieldVisibilityForStatus(btn.dataset.value);
+    updateModalFieldVisibility();
   });
 });
 
-// 「欲しい（まだ持っていない）」本には、電子栞や評価は意味を持たないので隠す。
-// ただし隠すだけで、すでに入っている値は消さない（保存処理の isWishlist 分岐を参照）。
-function updateFieldVisibilityForStatus(status) {
-  const isWishlist = status === 'wishlist';
+function currentModalStatus() {
+  const btn = document.querySelector('#bookStatusSelector .status-btn.active');
+  return btn ? btn.dataset.value : 'unread';
+}
+
+// 状態とシリーズ設定に応じて、意味を持たない入力欄を隠す。
+// **隠すだけで値は消さない**（保存処理側で、隠れている項目は既存値を持ち越す）。
+function updateModalFieldVisibility() {
+  const isWishlist = currentModalStatus() === 'wishlist';
+  const isSeries = document.getElementById('bookSeriesInput').checked;
   document.getElementById('bookmarkFieldGroup').classList.toggle('hidden', isWishlist);
   document.getElementById('ratingFieldGroup').classList.toggle('hidden', isWishlist);
+  // 価格は「これから買う本の目安」なので欲しいリストのときだけ
+  document.getElementById('priceFieldGroup').classList.toggle('hidden', !isWishlist);
+  document.getElementById('seriesFieldGroup').classList.toggle('hidden', !isSeries);
 }
+
+document.getElementById('bookSeriesInput').addEventListener('change', () => {
+  updateModalFieldVisibility();
+  updateVolumeHint();
+});
+
+// 「1-105」と打った結果がその場で分かるようにする（冊数・抜け・次の巻）
+function updateVolumeHint() {
+  const hint = document.getElementById('volumeHint');
+  const info = volumeInfo({
+    volumes: document.getElementById('bookVolumesInput').value,
+    totalVolumes: parseInt(document.getElementById('bookTotalVolumesInput').value, 10) || 0,
+  });
+  if (!info) { hint.textContent = ''; return; }
+  const parts = [`${info.count}冊（${info.ranges}巻）`];
+  if (info.missing.length) parts.push(`抜け: ${formatVolumeRanges(info.missing)}巻`);
+  if (info.complete) parts.push('全巻そろっています');
+  else if (info.next) parts.push(`次は ${info.next}巻`);
+  if (info.remaining) parts.push(`全${info.total}巻まで残り ${info.remaining}冊`);
+  hint.textContent = parts.join(' ・ ');
+}
+document.getElementById('bookVolumesInput').addEventListener('input', updateVolumeHint);
+document.getElementById('bookTotalVolumesInput').addEventListener('input', updateVolumeHint);
 
 // 編集画面の棚セレクト。棚が1つも無ければ行ごと隠す。
 function renderShelfSelect(selectedId) {
@@ -857,10 +963,64 @@ async function localizeCoverUrl(url) {
   return await readAndResizeImage(blob);
 }
 
+// ── 重複チェック ──
+// 書店で「これ持ってたっけ？」を防ぐのが目的なので、読み取った直後に知らせる。
+// ISBNが一致すれば確実。手で登録した本はISBNを持たないので、タイトル一致も見る。
+function findDuplicateBook(isbn, title) {
+  const norm = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, '');
+  if (isbn) {
+    const byIsbn = books.find((b) => b.isbn && b.isbn === isbn && b.id !== editingBookId);
+    if (byIsbn) return byIsbn;
+  }
+  if (title) {
+    const t = norm(title);
+    return books.find((b) => norm(b.title) === t && b.id !== editingBookId) || null;
+  }
+  return null;
+}
+
+function hideDuplicateWarning() {
+  document.getElementById('dupWarning').classList.add('hidden');
+}
+
+const DUP_STATUS_LABEL = { wishlist: '欲しいリスト', unread: '未読', reading: '読書中', done: '読了' };
+
+function showDuplicateWarning(dup) {
+  const box = document.getElementById('dupWarning');
+  const text = document.getElementById('dupWarningText');
+  const btn = document.getElementById('dupWarningBtn');
+  const label = DUP_STATUS_LABEL[dup.status] || dup.status;
+
+  if (dup.status === 'wishlist') {
+    text.innerHTML = `<strong>${escHtml(dup.title)}</strong> は欲しいリストに入っています。`;
+    btn.textContent = '買ったので未読にする';
+    btn.onclick = async () => {
+      dup.status = 'unread';
+      await dbPut(STORES.books, dup);
+      hideDuplicateWarning();
+      closeModal('bookModal');
+      renderBooks();
+      showToast('「未読」に変えました');
+    };
+  } else {
+    text.innerHTML = `<strong>${escHtml(dup.title)}</strong> はすでに本棚にあります（${escHtml(label)}）。`;
+    btn.textContent = 'その本を開く';
+    btn.onclick = () => { hideDuplicateWarning(); openBookModal(dup.id); };
+  }
+  box.classList.remove('hidden');
+}
+
 // openBD（https://openbd.jp/）は国内書誌データベース。APIキー不要・CORS対応。
 async function handleIsbnLookup(rawIsbn) {
   const isbn = String(rawIsbn).replace(/[^0-9Xx]/g, '');
   if (isbn.length < 9) { showToast('ISBNの形式が正しくありません'); return; }
+  document.getElementById('isbnInput').value = isbn;
+
+  // 通信の前に、ISBNだけで分かる重複を先に知らせる（圏外でも効くように）
+  const knownByIsbn = findDuplicateBook(isbn, null);
+  if (knownByIsbn) showDuplicateWarning(knownByIsbn);
+  else hideDuplicateWarning();
+
   showToast('書籍情報を検索中…');
   try {
     const res = await fetch(`https://api.openbd.jp/v1/get?isbn=${encodeURIComponent(isbn)}`);
@@ -868,6 +1028,11 @@ async function handleIsbnLookup(rawIsbn) {
     const rec = data && data[0];
     if (!rec || !rec.summary) { showToast('見つかりませんでした。手入力してください'); return; }
     const s = rec.summary;
+    // タイトルが分かったので、ISBNを持たない手入力の本とも突き合わせる
+    if (!knownByIsbn) {
+      const dup = findDuplicateBook(isbn, s.title);
+      if (dup) showDuplicateWarning(dup);
+    }
     if (s.title) document.getElementById('bookTitleInput').value = s.title;
     if (s.author) document.getElementById('bookAuthorInput').value = cleanAuthorName(s.author);
     if (s.cover) {
@@ -1043,14 +1208,29 @@ document.getElementById('saveBookBtn').addEventListener('click', async () => {
   const rating = isWishlist
     ? (existing && existing.rating) || 0
     : document.querySelectorAll('#bookRatingSelector .rating-star.active').length;
+  // 価格の欄は欲しいリストのときしか出していないので、それ以外は既存値を持ち越す
+  const price = isWishlist
+    ? parseInt(document.getElementById('bookPriceInput').value, 10) || 0
+    : (existing && existing.price) || 0;
   const tagsRaw = document.getElementById('bookTagsInput').value.trim();
   const tags = tagsRaw ? [...new Set(tagsRaw.split(/[,、]+/).map((t) => t.trim()).filter(Boolean))] : [];
   const shelfId = document.getElementById('bookShelfSelect').value || null;
+  const isbn = document.getElementById('isbnInput').value.replace(/[^0-9Xx]/g, '') || null;
+  const isSeries = document.getElementById('bookSeriesInput').checked;
+  // シリーズを解除しても巻の情報は消さない（また戻したときに残っているように）
+  const volumes = isSeries
+    ? document.getElementById('bookVolumesInput').value.trim()
+    : (existing && existing.volumes) || '';
+  const totalVolumes = isSeries
+    ? parseInt(document.getElementById('bookTotalVolumesInput').value, 10) || 0
+    : (existing && existing.totalVolumes) || 0;
 
   if (editingBookId) {
     const b = existing;
     Object.assign(b, {
-      title, author, memo, favorite, status, rating, tags, shelfId,
+      title, author, memo, favorite, status, rating, tags, shelfId, isbn,
+      isSeries, volumes, totalVolumes: totalVolumes || null,
+      price: price || null,
       bookmarkPage: bookmarkPage || null,
       totalPages: totalPages || null,
       // pendingCoverDataUrl が「保存される表紙」そのもの（setCoverPreview が唯一の更新元）。
@@ -1062,7 +1242,9 @@ document.getElementById('saveBookBtn').addEventListener('click', async () => {
   } else {
     const maxOrder = books.reduce((m, x) => Math.max(m, x.order ?? -1), -1);
     const b = {
-      id: uid(), title, author, memo, favorite, status, rating, tags, shelfId,
+      id: uid(), title, author, memo, favorite, status, rating, tags, shelfId, isbn,
+      isSeries, volumes, totalVolumes: totalVolumes || null,
+      price: price || null,
       bookmarkPage: bookmarkPage || null,
       totalPages: totalPages || null,
       cover: pendingCoverDataUrl || null,

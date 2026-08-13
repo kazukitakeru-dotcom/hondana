@@ -104,6 +104,10 @@
       </div>
       <button class="btn btn-sm btn-outline" style="width:auto;margin-top:8px;" id="scanIsbnBtn">📷 バーコードを読み取る</button>
       <p class="form-hint">openBD（国内書誌データベース）からタイトル・著者・表紙を取得します。通信が必要です。バーコードは本の裏の<strong>上段（978から始まる方）</strong>を読み取ってください。</p>
+      <div class="dup-warning hidden" id="dupWarning">
+        <div class="dup-warning-text" id="dupWarningText"></div>
+        <button class="dup-warning-btn" id="dupWarningBtn"></button>
+      </div>
     </div>
 
     <div class="form-group">
@@ -149,6 +153,12 @@
       <p class="form-hint">「欲しいリスト」はまだ持っていない、これから買いたい本。買ったら「未読」に変えます。</p>
     </div>
 
+    <div class="form-group hidden" id="priceFieldGroup">
+      <label class="form-label">価格（円）</label>
+      <input class="form-input" type="number" id="bookPriceInput" placeholder="例：628" min="0" inputmode="numeric">
+      <p class="form-hint">買うときの目安。欲しいリストの本だけ記録できます。</p>
+    </div>
+
     <div class="form-group">
       <label class="toggle-row" for="bookFavoriteInput">
         <span>★ お気に入りに入れる</span>
@@ -157,6 +167,24 @@
           <span class="toggle-track"><span class="toggle-thumb"></span></span>
         </span>
       </label>
+    </div>
+
+    <div class="form-group">
+      <label class="toggle-row" for="bookSeriesInput">
+        <span>📚 シリーズ（漫画など）としてまとめる</span>
+        <span class="toggle">
+          <input type="checkbox" id="bookSeriesInput">
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        </span>
+      </label>
+    </div>
+
+    <div class="form-group hidden" id="seriesFieldGroup">
+      <label class="form-label">持っている巻</label>
+      <input class="form-input" type="text" id="bookVolumesInput" placeholder="例：1-105　または　1-10, 12-20">
+      <label class="form-label" style="margin-top:10px;">全巻数（分かれば・任意）</label>
+      <input class="form-input" type="number" id="bookTotalVolumesInput" placeholder="例：105" min="0" inputmode="numeric">
+      <p class="form-hint" id="volumeHint"></p>
     </div>
 
     <div class="form-group" id="bookmarkFieldGroup">
