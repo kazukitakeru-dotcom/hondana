@@ -361,6 +361,18 @@
     </div>
 
     <div class="settings-group">
+      <div class="section-header"><span class="section-title">検索の精度</span></div>
+      <p class="sync-status" id="kanaStatus">-</p>
+      <div class="sync-actions mt-2">
+        <button class="btn btn-sm btn-primary" style="width:auto;" id="fetchKanaBtn">読みがなを取得</button>
+      </div>
+      <p class="sync-hint">
+        取得すると「おだ」で「尾田」、「わがはい」で「吾輩は猫である」のように
+        <strong>読みでも探せる</strong>ようになります。ISBNが分かっている本だけが対象で、通信が必要です。
+      </p>
+    </div>
+
+    <div class="settings-group">
       <div class="section-header"><span class="section-title">棚の管理</span></div>
       <div id="shelfManagerList"></div>
       <div class="add-tag-row mt-2">

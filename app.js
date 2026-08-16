@@ -7,7 +7,7 @@
 // 画面に出す版。**`sw.js` の CACHE_NAME と必ず揃えること。**
 // 「直したはずの機能が出てこない」がキャッシュのせいなのか作りのせいなのかを
 // 端末側で判別できるようにするためにある。
-const APP_VERSION = 'v19';
+const APP_VERSION = 'v20';
 
 // ── PWA Service Worker ──
 if ('serviceWorker' in navigator) {
@@ -298,10 +298,12 @@ function normalizeSearch(s) {
     .replace(/[ぁ-ゖ]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0x60)); // ひらがな→カタカナ
 }
 
-// 1冊ぶんの「検索の対象になる文字列」をまとめて作る
+// 1冊ぶんの「検索の対象になる文字列」をまとめて作る。
+// kana は openBD の読み仮名（collationkey）。これがあると「おだ」で「尾田」が引ける。
 function searchableText(b) {
   const parts = [
     b.title, b.author, b.memo, b.isbn, b.store,
+    b.titleKana, b.authorKana,
     ...(b.tags || []),
     shelfName(b.shelfId),
   ];
@@ -708,9 +710,55 @@ document.getElementById('newShelfInput').addEventListener('keydown', (e) => {
 // ── 設定 ──
 document.getElementById('settingsBtn').addEventListener('click', () => {
   renderShelfManager();
+  updateKanaStatus();
   document.getElementById('appVersionLabel').textContent = APP_VERSION;
   openModal('settingsModal');
   if (typeof updateSyncUI === 'function') updateSyncUI();
+});
+
+// 既に登録済みの本にも読み仮名を入れる。
+// 読み取りのときしか読みが手に入らないので、これが無いと今ある本は読みで引けないままになる。
+function booksNeedingKana() {
+  return books.filter((b) => b.isbn && !b.titleKana && !b.authorKana);
+}
+
+function updateKanaStatus() {
+  const el = document.getElementById('kanaStatus');
+  if (!el) return;
+  const need = booksNeedingKana().length;
+  const have = books.filter((b) => b.titleKana || b.authorKana).length;
+  el.textContent = need
+    ? `読みがな未取得の本が ${need}冊 あります（取得済み ${have}冊）`
+    : (have ? `すべて取得済みです（${have}冊）` : 'ISBNのある本がまだありません');
+}
+
+document.getElementById('fetchKanaBtn').addEventListener('click', async () => {
+  const targets = booksNeedingKana();
+  if (!targets.length) { showToast('取得が必要な本はありません'); return; }
+  if (!navigator.onLine) { showToast('オフラインでは取得できません'); return; }
+
+  const CHUNK = 20; // openBD はカンマ区切りでまとめて引ける
+  let got = 0;
+  for (let i = 0; i < targets.length; i += CHUNK) {
+    const batch = targets.slice(i, i + CHUNK);
+    showToast(`読みがなを取得中… ${i}/${targets.length}`);
+    try {
+      const url = `https://api.openbd.jp/v1/get?isbn=${batch.map((b) => encodeURIComponent(b.isbn)).join(',')}`;
+      const recs = await (await fetch(url)).json();
+      for (let j = 0; j < batch.length; j++) {
+        const r = recs[j];
+        if (!r) continue;
+        const { titleKana, authorKana } = extractReadings(r);
+        if (!titleKana && !authorKana) continue;
+        batch[j].titleKana = titleKana;
+        batch[j].authorKana = authorKana;
+        await dbPut(STORES.books, batch[j]);
+        got++;
+      }
+    } catch (e) { /* 取れなかった塊は飛ばす */ }
+  }
+  updateKanaStatus();
+  showToast(got ? `${got}冊の読みがなを取得しました` : '読みがなを取得できませんでした');
 });
 
 document.getElementById('forceUpdateBtn').addEventListener('click', async () => {
@@ -1360,6 +1408,7 @@ function openBookModal(id) {
   editingBookId = id;
   pendingCoverDataUrl = null;
   pendingLabelHint = null; // 前回読み取ったレーベルを引きずらない（棚の学習が汚れるため）
+  pendingReadings = null;
   const b = id ? books.find((x) => x.id === id) : null;
 
   document.getElementById('bookModalTitle').textContent = b ? '本を編集' : '本を追加';
@@ -1519,6 +1568,8 @@ const LABEL_SHELF_KEY = 'hondana_label_shelf_v1';
 
 // 読み取った本のレーベル名（「ジャンプ・コミックス」等）。棚を覚えるときの手がかりに使う。
 let pendingLabelHint = null;
+// 読み取った本の読み仮名。保存時に本へ持たせる。
+let pendingReadings = null;
 
 // openBD にはジャンル分類（Cコード）が入っていないので、正しく自動判別する手段は無い。
 // 代わりに**使っているうちに覚える**ようにしてある。
@@ -1657,6 +1708,25 @@ function betterCasedTitle(openbdTitle, googleTitle) {
 // openBD には「I''s」のようにアポストロフィが重なっている題名がある
 function tidyTitle(t) {
   return String(t || '').replace(/''/g, "'").replace(/\s+/g, ' ').trim();
+}
+
+// openBD の onix から読み仮名（collationkey）を取り出す。
+// 例）尾田栄一郎 → 「オダ, エイイチロウ」 / 吾輩は猫である → 「ワガハイ ワ ネコ デ アル」
+// これを持っておくと「おだ」「わがはい」のような読みで引ける（読み辞書は要らない）。
+// ただし ASCII の題名（One piece）には読みが入らないので「ワンピース」では引けない。
+function extractReadings(rec) {
+  const dd = (rec && rec.onix && rec.onix.DescriptiveDetail) || {};
+  const tt = ((dd.TitleDetail || {}).TitleElement || {}).TitleText || {};
+  const person = ((dd.Contributor || [])[0] || {}).PersonName || {};
+  const clean = (s) => String(s || '')
+    .replace(/,?\s*\d{3,4}-\d{0,4}\s*$/, '') // 「, 1867-1916」のような生没年を落とす
+    .replace(/[,、]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return {
+    titleKana: clean(tt.collationkey) || null,
+    authorKana: clean(person.collationkey) || null,
+  };
 }
 
 // 表紙のURLを取ってきて、アップロード画像と同じように縮小した data URL にする。
@@ -1857,6 +1927,8 @@ async function handleIsbnLookup(rawIsbn) {
     }
     let title = tidyTitle(s.title);
     if (s.author) document.getElementById('bookAuthorInput').value = cleanAuthorName(s.author);
+    // 読み仮名を控えておく（保存時に本へ持たせる）。「おだ」で「尾田」が引けるようになる。
+    pendingReadings = extractReadings(rec);
 
     // 棚は、読み取ったレーベル名（「ジャンプ・コミックス」等）も手がかりにして先に選んでおく
     pendingLabelHint = s.series || null;
@@ -2073,6 +2145,9 @@ document.getElementById('saveBookBtn').addEventListener('click', async () => {
     // 「このレーベルはこの棚」を覚えて、次に同じレーベルを読んだとき自動で選べるようにする
     rememberLabelShelf(pendingLabelHint, shelfId);
   }
+  // 読み仮名は読み取ったときだけ入る。手で題名を直しても、既にある読みは残す。
+  const titleKana = (pendingReadings && pendingReadings.titleKana) || (existing && existing.titleKana) || null;
+  const authorKana = (pendingReadings && pendingReadings.authorKana) || (existing && existing.authorKana) || null;
   const format = pendingFormat || 'paper';
   // ストアの欄は電子のときしか出していないので、紙にしたら既存値を持ち越す
   const store = (format === 'ebook' || format === 'both')
@@ -2088,7 +2163,7 @@ document.getElementById('saveBookBtn').addEventListener('click', async () => {
     const b = existing;
     Object.assign(b, {
       title, author, memo, favorite, status, rating, tags, shelfId, isbn,
-      isSeries, totalVolumes: totalVolumes || null, format, store,
+      isSeries, totalVolumes: totalVolumes || null, format, store, titleKana, authorKana,
       price: price || null,
       bookmarkPage: bookmarkPage || null,
       totalPages: totalPages || null,
@@ -2102,7 +2177,7 @@ document.getElementById('saveBookBtn').addEventListener('click', async () => {
     const maxOrder = books.reduce((m, x) => Math.max(m, x.order ?? -1), -1);
     const b = {
       id: uid(), title, author, memo, favorite, status, rating, tags, shelfId, isbn,
-      isSeries, totalVolumes: totalVolumes || null, format, store,
+      isSeries, totalVolumes: totalVolumes || null, format, store, titleKana, authorKana,
       price: price || null,
       bookmarkPage: bookmarkPage || null,
       totalPages: totalPages || null,
