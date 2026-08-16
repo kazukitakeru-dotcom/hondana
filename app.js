@@ -7,7 +7,7 @@
 // 画面に出す版。**`sw.js` の CACHE_NAME と必ず揃えること。**
 // 「直したはずの機能が出てこない」がキャッシュのせいなのか作りのせいなのかを
 // 端末側で判別できるようにするためにある。
-const APP_VERSION = 'v17';
+const APP_VERSION = 'v18';
 
 // ── PWA Service Worker ──
 if ('serviceWorker' in navigator) {
@@ -285,6 +285,38 @@ function readAndResizeImage(file, maxSize = 640, quality = 0.85) {
 }
 
 // ── 検索 ──
+// 打った通りでなくても当たるようにする。以前は title と author に対する
+// そのままの部分一致だけで、次のどれも外れていた：
+//   ・「尾田栄一郎」… openBD の著者は「尾田 栄一郎」と空白入りで入る
+//   ・「ONE PIECE」「one piece」… 大文字小文字を区別していた
+//   ・タグ・メモ・ISBN・棚名・電子ストア … そもそも対象外
+function normalizeSearch(s) {
+  return String(s || '')
+    .normalize('NFKC')                 // 全角英数→半角、半角カナ→全角カナ
+    .toLowerCase()
+    .replace(/[\s　]+/g, '')       // 空白は無視（「尾田 栄一郎」＝「尾田栄一郎」）
+    .replace(/[ぁ-ゖ]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0x60)); // ひらがな→カタカナ
+}
+
+// 1冊ぶんの「検索の対象になる文字列」をまとめて作る
+function searchableText(b) {
+  const parts = [
+    b.title, b.author, b.memo, b.isbn, b.store,
+    ...(b.tags || []),
+    shelfName(b.shelfId),
+  ];
+  if (b.volumeNo) parts.push(`${b.volumeNo}巻`);
+  return normalizeSearch(parts.filter(Boolean).join(' '));
+}
+
+// 空白区切りの語は「全部含む」で絞る（「尾田 海賊」で両方を含む本）
+function matchesSearch(b, rawQuery) {
+  const terms = String(rawQuery || '').split(/[\s　]+/).map(normalizeSearch).filter(Boolean);
+  if (!terms.length) return true;
+  const hay = searchableText(b);
+  return terms.every((t) => hay.includes(t));
+}
+
 const searchBtn = document.getElementById('searchBtn');
 const searchBar = document.getElementById('searchBar');
 const searchInput = document.getElementById('searchInput');
@@ -791,7 +823,9 @@ function renderBooks() {
     if (currentShelfFilter === '__none__') matchShelf = !b.shelfId || !shelfName(b.shelfId);
     else if (currentShelfFilter) matchShelf = b.shelfId === currentShelfFilter;
     const matchTag = !currentTagFilter || (b.tags || []).includes(currentTagFilter);
-    const matchQ = !q || (b.title || '').includes(q) || (b.author || '').includes(q);
+    // シリーズは中の巻にも当てる（巻の題名やISBNで探してもシリーズが出るように）
+    const matchQ = !q || matchesSearch(b, q)
+      || (b.isSeries && seriesVolumes(b.id).some((v) => matchesSearch(v, q)));
     return passesStatus(b) && matchShelf && matchTag && matchQ;
   };
 
@@ -1242,7 +1276,7 @@ function renderBookPicker() {
   const seriesKey = normalizeTitleKey(splitTitleVolume(series.title).base || series.title);
 
   let cands = eligibleBooksForSeries(series);
-  if (q) cands = cands.filter((b) => (b.title || '').includes(q) || (b.author || '').includes(q));
+  if (q) cands = cands.filter((b) => matchesSearch(b, q));
 
   // 題名がシリーズ名で始まる本を上に出す（たいていはこれを探しているので）
   const scored = cands.map((b) => {
