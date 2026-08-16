@@ -7,7 +7,7 @@
 // 画面に出す版。**`sw.js` の CACHE_NAME と必ず揃えること。**
 // 「直したはずの機能が出てこない」がキャッシュのせいなのか作りのせいなのかを
 // 端末側で判別できるようにするためにある。
-const APP_VERSION = 'v16';
+const APP_VERSION = 'v17';
 
 // ── PWA Service Worker ──
 if ('serviceWorker' in navigator) {
@@ -727,6 +727,27 @@ async function createSeriesFlow() {
 // 本を3冊ずつ棚板（shelf-plank）で区切り、実際の本棚のように見せている。
 const SHELF_COLS = 3;
 
+// ── シリーズを棚の上で開く ──
+// シリーズを1枚のカード＋要約テキストだけにしていたら「文字でしか確認できず、
+// 持っている実感が無い」と言われた。棚の上でそのまま巻を並べて見せられるようにする。
+// 開いた状態は覚えておく（毎回開き直すのは面倒なので）。
+const EXPANDED_KEY = 'hondana_expanded_series_v1';
+
+function loadExpandedSeries() {
+  try { return new Set(JSON.parse(localStorage.getItem(EXPANDED_KEY) || '[]')); }
+  catch (e) { return new Set(); }
+}
+let expandedSeries = loadExpandedSeries();
+
+function isSeriesExpanded(id) { return expandedSeries.has(id); }
+
+function toggleSeriesExpanded(id) {
+  if (expandedSeries.has(id)) expandedSeries.delete(id);
+  else expandedSeries.add(id);
+  localStorage.setItem(EXPANDED_KEY, JSON.stringify([...expandedSeries]));
+  renderBooks();
+}
+
 function updateShelfStats() {
   const el = document.getElementById('shelfStats');
   if (!el) return;
@@ -752,25 +773,51 @@ function renderBooks() {
   updateShelfStats();
 
   const q = searchQuery.trim();
-  let list = books.filter((b) => {
-    // シリーズの巻は本棚の一覧に出さない（シリーズを開いたときだけ並ぶ）
-    if (b.seriesId) return false;
-    if (showArrows) return true; // 編集中は絞り込みを無視して全冊を対象にする
-    let matchFilter = true;
-    if (currentFilter === 'wishlist') matchFilter = b.status === 'wishlist';
-    else if (currentFilter === 'reading') matchFilter = b.status === 'reading';
-    else if (currentFilter === 'unread') matchFilter = b.status === 'unread';
-    else if (currentFilter === 'done') matchFilter = b.status === 'done';
-    else if (currentFilter === 'favorite') matchFilter = !!b.favorite;
+  // 状態（未読/読了など）だけの判定。巻にも棚にも共通で使う。
+  const passesStatus = (b) => {
+    if (currentFilter === 'all') return true;
+    if (currentFilter === 'favorite') return !!b.favorite;
+    // シリーズ本体は状態を持たない（持つのは巻の方）。
+    // 本体で判定すると、5巻まで読了でもシリーズごと消えて読了の巻まで見えなくなる。
+    // 中の巻がひとつでも当てはまれば出す。
+    if (b.isSeries) {
+      const vols = seriesVolumes(b.id);
+      if (vols.length) return vols.some((v) => v.status === currentFilter);
+    }
+    return b.status === currentFilter;
+  };
+  const passes = (b) => {
     let matchShelf = true;
     if (currentShelfFilter === '__none__') matchShelf = !b.shelfId || !shelfName(b.shelfId);
     else if (currentShelfFilter) matchShelf = b.shelfId === currentShelfFilter;
     const matchTag = !currentTagFilter || (b.tags || []).includes(currentTagFilter);
     const matchQ = !q || (b.title || '').includes(q) || (b.author || '').includes(q);
-    return matchFilter && matchShelf && matchTag && matchQ;
+    return passesStatus(b) && matchShelf && matchTag && matchQ;
+  };
+
+  let list = books.filter((b) => {
+    // シリーズの巻は、そのシリーズを開いているときだけ棚に出す
+    if (b.seriesId) return false;
+    if (showArrows) return true; // 編集中は絞り込みを無視して全冊を対象にする
+    return passes(b);
   });
 
   sortBookList(list);
+
+  // 開いているシリーズは、そのカードのすぐ後ろに巻を差し込む。
+  // 並び替えの編集中は順番が壊れるので差し込まない。
+  if (!showArrows) {
+    const withVolumes = [];
+    for (const b of list) {
+      withVolumes.push(b);
+      if (b.isSeries && isSeriesExpanded(b.id)) {
+        // 巻には状態の絞り込みだけをかける（「読了だけ」で開けば読んだ巻だけ並ぶ）。
+        // 棚やタグは親のシリーズで判定済みなので、巻に重ねると余計に消えてしまう。
+        withVolumes.push(...seriesVolumes(b.id).filter(passesStatus));
+      }
+    }
+    list = withVolumes;
+  }
 
   if (!list.length) {
     grid.innerHTML = '';
@@ -884,22 +931,26 @@ function renderBookCard(b, showArrows) {
     : '';
 
   const status = bookStatusLine(b, vi);
+  const isVolume = !!b.seriesId;
+  const expanded = vi && isSeriesExpanded(b.id);
 
-  return `<div class="book-card" data-id="${b.id}">
-    <div class="book-cover-wrap ${b.status === 'wishlist' ? 'wishlist' : ''}">
+  return `<div class="book-card ${isVolume ? 'is-volume' : ''}" data-id="${b.id}">
+    <div class="book-cover-wrap ${b.status === 'wishlist' ? 'wishlist' : ''} ${expanded ? 'expanded' : ''}">
       <div class="book-cover">
         ${cover ? `<img src="${escHtml(cover)}" alt="${escHtml(b.title)}" loading="lazy">` : bookIcon()}
       </div>
       <button class="book-fav-btn ${b.favorite ? 'active' : ''}" data-fav="${b.id}" title="お気に入り" aria-label="お気に入り">★</button>
+      ${vi ? `<button class="book-series-btn" data-series-manage="${b.id}" title="シリーズを管理" aria-label="シリーズを管理">⚙</button>` : ''}
       ${moveHtml}
       ${formatBadge(b, vi)}
       ${vi ? `<div class="book-volume-badge">${vi.count}冊</div>` : ''}
+      ${isVolume ? `<div class="book-volume-badge vol">${b.volumeNo}巻</div>` : ''}
       ${pct !== null ? `<div class="book-progress-track"><div class="book-progress-fill" style="width:${pct}%"></div></div>` : ''}
     </div>
-    <div class="book-title">${escHtml(b.title)}</div>
-    <div class="book-author">${b.author ? escHtml(b.author) : ''}</div>
+    <div class="book-title">${escHtml(isVolume ? `${b.volumeNo}巻` : b.title)}</div>
+    <div class="book-author">${isVolume ? '' : (b.author ? escHtml(b.author) : '')}</div>
     <div class="book-status-tag ${status.cls}">${escHtml(status.text)}</div>
-    ${tagsHtml}
+    ${vi ? `<div class="book-expand-hint">${expanded ? '▲ 閉じる' : '▼ 全巻を見る'}</div>` : tagsHtml}
   </div>`;
 }
 
@@ -916,11 +967,22 @@ function attachBookCardHandlers(grid, list, showArrows) {
 
   grid.querySelectorAll('.book-card').forEach((card) => {
     card.addEventListener('click', (e) => {
-      if (e.target.closest('.book-fav-btn') || e.target.closest('.book-move-btn')) return;
+      if (e.target.closest('.book-fav-btn') || e.target.closest('.book-move-btn')
+          || e.target.closest('.book-series-btn')) return;
       const b = books.find((x) => x.id === card.dataset.id);
-      // シリーズは中身（巻の一覧）を開く。設定はその中から辿れる
-      if (b && b.isSeries) openSeriesModal(b.id);
-      else openBookModal(card.dataset.id);
+      if (!b) return;
+      // シリーズは棚の上でそのまま開閉する（表紙で見たいので）。管理は⚙から。
+      if (b.isSeries) toggleSeriesExpanded(b.id);
+      // 巻は軽いシートで（本の編集画面は重すぎる）
+      else if (b.seriesId) openVolumeSheet(b.id);
+      else openBookModal(b.id);
+    });
+  });
+
+  grid.querySelectorAll('[data-series-manage]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openSeriesModal(btn.dataset.seriesManage);
     });
   });
 

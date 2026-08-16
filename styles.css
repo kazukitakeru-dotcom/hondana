@@ -372,14 +372,57 @@ input, textarea { font-family: inherit; }
   -webkit-box-orient: vertical;
   overflow: hidden;
   overflow-wrap: anywhere;
-  height: calc(1.35em * 2);
+  /* px で固定する。em にすると、文字サイズを変えた種類のカード（巻など）だけ
+     行が縮んでカードの背丈が揃わなくなる。 */
+  height: 36px;
 }
 
 .book-author,
 .book-status-tag,
-.book-tags {
-  height: 1.4em;
+.book-tags,
+.book-expand-hint {
+  height: 16px;
   overflow: hidden;
+}
+
+/* シリーズカードの「▼ 全巻を見る」。押せることが分かるように色を付ける */
+.book-expand-hint {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--primary);
+  white-space: nowrap;
+}
+
+/* シリーズの管理（⚙）。表紙の左上 */
+.book-series-btn {
+  position: absolute;
+  top: 6px; left: 6px;
+  width: 26px; height: 26px;
+  border-radius: 50%;
+  border: none;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px;
+  background: rgba(255,253,249,0.92);
+  color: var(--text-sub);
+  box-shadow: var(--shadow-sm);
+}
+.book-series-btn:active { transform: scale(0.88); }
+
+/* 開いているシリーズは枠を強調して、下に続く巻との関係を示す */
+.book-cover-wrap.expanded {
+  outline: 3px solid var(--primary);
+  outline-offset: -3px;
+}
+
+/* 巻のカードは少し引っ込めて、シリーズの中身だと分かるようにする */
+.book-card.is-volume .book-cover-wrap {
+  box-shadow: none;
+  border-radius: var(--radius-sm);
+}
+.book-card.is-volume .book-title {
+  font-size: 12px;
+  color: var(--text-sub);
+  font-weight: 600;
 }
 
 .book-author {
@@ -415,6 +458,13 @@ input, textarea { font-family: inherit; }
   line-height: 1.5;
   letter-spacing: -1px;
   box-shadow: var(--shadow-sm);
+}
+
+/* 巻番号のバッジ。表紙が無くても何巻か分かるように大きめ */
+.book-volume-badge.vol {
+  background: var(--primary);
+  font-size: 11px;
+  padding: 2px 8px;
 }
 
 /* シリーズの巻数バッジ（表紙の右下） */
