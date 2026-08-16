@@ -490,9 +490,11 @@ function seriesInfo(series) {
   };
 }
 
-// シリーズに属する1冊を作る
-function makeVolumeRecord(series, no) {
-  return {
+// シリーズに属する1冊を作る。
+// 読み取りから来た場合は extra で ISBN や表紙が渡ってくるので、それを残す
+// （せっかく取得した情報を捨てて「◯◯ 3」だけの空レコードにしないため）。
+function makeVolumeRecord(series, no, extra = {}) {
+  return Object.assign({
     id: uid(),
     seriesId: series.id,
     volumeNo: no,
@@ -507,12 +509,12 @@ function makeVolumeRecord(series, no) {
     format: series.format || 'paper',
     store: series.store || null,
     createdAt: Date.now(),
-  };
+  }, extra);
 }
 
-async function addVolumeRecord(series, no) {
+async function addVolumeRecord(series, no, extra = {}) {
   if (!no || seriesVolumes(series.id).some((v) => v.volumeNo === no)) return null;
-  const v = makeVolumeRecord(series, no);
+  const v = makeVolumeRecord(series, no, extra);
   books.push(v);
   await dbPut(STORES.books, v);
   return v;
@@ -1419,15 +1421,38 @@ function cleanAuthorName(raw) {
 // openBD は書誌は良いが**表紙がほぼ空**（実際に漫画・文庫・絵本で確認して3冊とも空だった）。
 // なので表紙は Google Books を控えとして引く。こちらはキー不要で ISBN 検索ができる。
 // 見つからない・繋がらない場合は静かに諦める（表紙は無くても本棚は成り立つ）。
-async function fetchCoverFromGoogleBooks(isbn) {
+async function fetchFromGoogleBooks(isbn) {
   const res = await fetch(`https://www.googleapis.com/books/v1/volumes?q=isbn:${encodeURIComponent(isbn)}`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json();
   const info = data.items && data.items[0] && data.items[0].volumeInfo;
-  const link = info && info.imageLinks && (info.imageLinks.thumbnail || info.imageLinks.smallThumbnail);
-  if (!link) throw new Error('表紙なし');
-  // http で返ってくることがある。edge=curl はページの折れ角の装飾なので外す。
-  return { url: link.replace(/^http:/, 'https:').replace(/&edge=curl/, ''), categories: info.categories || null };
+  if (!info) throw new Error('見つかりません');
+  const link = info.imageLinks && (info.imageLinks.thumbnail || info.imageLinks.smallThumbnail);
+  return {
+    title: info.title || null,
+    // http で返ってくることがある。edge=curl はページの折れ角の装飾なので外す。
+    url: link ? link.replace(/^http:/, 'https:').replace(/&edge=curl/, '') : null,
+    categories: info.categories || null,
+  };
+}
+
+// openBD は ASCII の題名を「先頭だけ大文字」に正規化して持っている。
+// 実データで確認: ONE PIECE→"One piece" / WILD HALF→"Wild half" / HUNTER×HUNTER→"Hunter×hunter"。
+// 図書館の目録の作法なので openBD 側では直らない。
+// そこで Google Books が**同じ本**を返したときだけ、大文字が多い方（元の表記に近い方）を採る。
+// 別の本にすり替わらないよう、英数字だけを取り出した並びが一致する場合に限る。
+function betterCasedTitle(openbdTitle, googleTitle) {
+  if (!openbdTitle) return googleTitle || '';
+  if (!googleTitle) return openbdTitle;
+  const key = (s) => (String(s).match(/[A-Za-z0-9]/g) || []).join('').toUpperCase();
+  if (!key(openbdTitle) || key(openbdTitle) !== key(googleTitle)) return openbdTitle;
+  const caps = (s) => (String(s).match(/[A-Z]/g) || []).length;
+  return caps(googleTitle) > caps(openbdTitle) ? googleTitle : openbdTitle;
+}
+
+// openBD には「I''s」のようにアポストロフィが重なっている題名がある
+function tidyTitle(t) {
+  return String(t || '').replace(/''/g, "'").replace(/\s+/g, ' ').trim();
 }
 
 // 表紙のURLを取ってきて、アップロード画像と同じように縮小した data URL にする。
@@ -1500,8 +1525,11 @@ function findSeriesForTitle(title) {
 
 // 読み取った巻を、確認を挟まずシリーズへ入れる。
 // 入れた結果はシリーズ画面を開いて見せ、間違いならその場で「外す」で戻せる。
-async function autoAddScannedVolume(series, vol) {
-  const added = await addVolumeRecord(series, vol);
+async function autoAddScannedVolume(series, vol, scanned = {}) {
+  const extra = {};
+  if (scanned.isbn) extra.isbn = scanned.isbn;
+  if (scanned.cover) extra.cover = scanned.cover;
+  const added = await addVolumeRecord(series, vol, extra);
   if (!added) return;
   hideDuplicateWarning();
   closeModal('bookModal');
@@ -1550,7 +1578,7 @@ function showDuplicateWarning(dup) {
 //   ・同じ作品のシリーズが既にある → その巻を足す（1タップ）
 //   ・まだ無い → その本をシリーズの始まりとしてまとめる
 // 巻ごとに1冊ずつ登録すると棚が埋まってしまうので、数字を手で打たずに済むようにしてある。
-function offerSeriesAction(rawTitle) {
+function offerSeriesAction(rawTitle, scanned = {}) {
   const hit = findSeriesForTitle(rawTitle);
   if (hit) {
     const already = seriesVolumes(hit.book.id).some((v) => v.volumeNo === hit.vol);
@@ -1564,7 +1592,7 @@ function offerSeriesAction(rawTitle) {
     }
     // 作品名も巻数も一致しているので、確認を挟まずそのまま入れる。
     // 押し間違いではなく「読み取った本を棚に入れる」だけなので、取り消せれば十分。
-    autoAddScannedVolume(hit.book, hit.vol);
+    autoAddScannedVolume(hit.book, hit.vol, scanned);
     return;
   }
 
@@ -1579,13 +1607,17 @@ function offerSeriesAction(rawTitle) {
         id: uid(), title: base, isSeries: true,
         author: document.getElementById('bookAuthorInput').value.trim(),
         shelfId: pendingShelfId || null,
-        status: 'unread', tags: [], cover: null,
+        status: 'unread', tags: [],
+        // 読み取った表紙はシリーズの顔として使う（1巻の表紙になることが多い）
+        cover: scanned.cover || null,
+        format: pendingFormat || 'paper',
+        store: pendingStore || null,
         order: books.reduce((m, x) => Math.max(m, x.order ?? -1), -1) + 1,
         createdAt: Date.now(),
       };
       books.push(series);
       await dbPut(STORES.books, series);
-      await addVolumeRecord(series, vol);
+      await addVolumeRecord(series, vol, scanned.isbn ? { isbn: scanned.isbn, cover: scanned.cover || null } : {});
       hideDuplicateWarning();
       closeModal('bookModal');
       renderBooks();
@@ -1619,33 +1651,39 @@ async function handleIsbnLookup(rawIsbn) {
       dup = findDuplicateBook(isbn, s.title);
       if (dup) showDuplicateWarning(dup);
     }
-    if (s.title) document.getElementById('bookTitleInput').value = s.title;
+    let title = tidyTitle(s.title);
     if (s.author) document.getElementById('bookAuthorInput').value = cleanAuthorName(s.author);
 
     // 棚は、読み取ったレーベル名（「ジャンプ・コミックス」等）も手がかりにして先に選んでおく
     pendingLabelHint = s.series || null;
-    if (!editingBookId) renderShelfPicker(defaultShelfIdForNewBook(s.series));
 
-    // 巻数が読み取れたら、シリーズにまとめる導線を出す。
-    // 同じ本が既にある（＝重複）ときは、そちらの案内を優先する。
-    if (!dup) offerSeriesAction(s.title);
-    // 表紙は openBD →（無ければ）Google Books の順に探す。
-    // できれば端末に取り込む（縮小済みの data URL）。そうすればオフラインでも見えるし、
+    // 表紙と題名の表記は Google Books にも当たる。
+    // openBD は表紙がほぼ空で、題名も ASCII を「先頭だけ大文字」に正規化してしまうため。
+    let coverUrl = s.cover || null;
+    try {
+      const g = await fetchFromGoogleBooks(isbn);
+      title = betterCasedTitle(title, tidyTitle(g.title));
+      if (!coverUrl) coverUrl = g.url;
+      if (g.categories) pendingLabelHint = (pendingLabelHint || '') + ' ' + g.categories.join(' ');
+    } catch (e) { /* 繋がらなくても openBD の内容だけで成立する */ }
+
+    if (title) document.getElementById('bookTitleInput').value = title;
+    if (!editingBookId) renderShelfPicker(defaultShelfIdForNewBook(pendingLabelHint));
+
+    // できれば表紙を端末に取り込む（縮小済みの data URL）。そうすればオフラインでも見えるし、
     // 相手側のリンクが切れても残る。取り込めなければURLのまま持つ
     // （その場合オフラインでは出ないが、カード側で本のアイコンに落ちる）。
-    let coverUrl = s.cover || null;
-    if (!coverUrl) {
-      try {
-        const g = await fetchCoverFromGoogleBooks(isbn);
-        coverUrl = g.url;
-        if (g.categories) pendingLabelHint = (pendingLabelHint || '') + ' ' + g.categories.join(' ');
-      } catch (e) { /* 表紙は無くてもよい */ }
-    }
     if (coverUrl) {
       let cover = coverUrl;
       try { cover = await localizeCoverUrl(coverUrl); } catch (e) { /* URLのまま使う */ }
       setCoverPreview(cover);
     }
+
+    // 巻数が読み取れたら、シリーズにまとめる導線を出す。
+    // 同じ本が既にある（＝重複）ときは、そちらの案内を優先する。
+    // 表紙まで揃えてから呼ぶので、シリーズへ入る巻にも表紙とISBNが残る。
+    if (!dup) offerSeriesAction(title, { isbn, cover: pendingCoverDataUrl });
+
     showToast(coverUrl ? '書籍情報を取得しました' : '書籍情報を取得しました（表紙は見つかりませんでした）');
   } catch (err) {
     showToast('検索に失敗しました（オフラインの可能性があります）');
