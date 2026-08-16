@@ -1153,6 +1153,7 @@ document.getElementById('seriesEditBtn').addEventListener('click', () => {
 function openBookModal(id) {
   editingBookId = id;
   pendingCoverDataUrl = null;
+  pendingLabelHint = null; // 前回読み取ったレーベルを引きずらない（棚の学習が汚れるため）
   const b = id ? books.find((x) => x.id === id) : null;
 
   document.getElementById('bookModalTitle').textContent = b ? '本を編集' : '本を追加';
@@ -1308,13 +1309,38 @@ function renderShelfPicker(selectedId) {
 //   3. 前回入れた棚
 // あくまで初期値。ボタンは大きく出ているので、違えばその場で押し替えられる。
 const LAST_SHELF_KEY = 'hondana_last_shelf_v1';
+const LABEL_SHELF_KEY = 'hondana_label_shelf_v1';
+
+// 読み取った本のレーベル名（「ジャンプ・コミックス」等）。棚を覚えるときの手がかりに使う。
+let pendingLabelHint = null;
+
+// openBD にはジャンル分類（Cコード）が入っていないので、正しく自動判別する手段は無い。
+// 代わりに**使っているうちに覚える**ようにしてある。
+// 「このレーベルの本はこの棚に入れた」を記録し、次に同じレーベルを読んだらそこを初期値にする。
+function loadLabelShelfMap() {
+  try { return JSON.parse(localStorage.getItem(LABEL_SHELF_KEY) || '{}') || {}; }
+  catch (e) { return {}; }
+}
+
+function rememberLabelShelf(label, shelfId) {
+  if (!label || !shelfId) return;
+  const map = loadLabelShelfMap();
+  map[String(label).trim()] = shelfId;
+  localStorage.setItem(LABEL_SHELF_KEY, JSON.stringify(map));
+}
 
 function guessShelfIdFromLabel(label) {
   if (!label) return null;
-  const isComic = /コミック|comics?/i.test(label);
-  const isNovel = /文庫|新書/.test(label);
+  // まず「前にこのレーベルを入れた棚」。使うほど当たるようになる
+  const learned = loadLabelShelfMap()[String(label).trim()];
+  if (learned && shelves.some((s) => s.id === learned)) return learned;
+  // 覚えが無ければレーベル名からの当てずっぽう
+  const isComic = /コミック|comics?|manga/i.test(label);
+  const isPicture = /絵本|童話|picture ?book/i.test(label);
+  const isNovel = /文庫|新書|小説|fiction|novel/i.test(label);
   const find = (re) => (shelves.find((s) => re.test(s.name)) || {}).id || null;
   if (isComic) return find(/漫画|マンガ|まんが|コミック/);
+  if (isPicture) return find(/絵本|童話/);
   if (isNovel) return find(/小説|文庫/);
   return null;
 }
@@ -1322,7 +1348,7 @@ function guessShelfIdFromLabel(label) {
 function defaultShelfIdForNewBook(labelHint) {
   if (currentShelfFilter && currentShelfFilter !== '__none__'
       && shelves.some((s) => s.id === currentShelfFilter)) return currentShelfFilter;
-  const guessed = guessShelfIdFromLabel(labelHint);
+  const guessed = guessShelfIdFromLabel(labelHint || pendingLabelHint);
   if (guessed) return guessed;
   const last = localStorage.getItem(LAST_SHELF_KEY);
   return last && shelves.some((s) => s.id === last) ? last : null;
@@ -1388,6 +1414,20 @@ function cleanAuthorName(raw) {
       .join(' '))
     .filter(Boolean)
     .join('、');
+}
+
+// openBD は書誌は良いが**表紙がほぼ空**（実際に漫画・文庫・絵本で確認して3冊とも空だった）。
+// なので表紙は Google Books を控えとして引く。こちらはキー不要で ISBN 検索ができる。
+// 見つからない・繋がらない場合は静かに諦める（表紙は無くても本棚は成り立つ）。
+async function fetchCoverFromGoogleBooks(isbn) {
+  const res = await fetch(`https://www.googleapis.com/books/v1/volumes?q=isbn:${encodeURIComponent(isbn)}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  const info = data.items && data.items[0] && data.items[0].volumeInfo;
+  const link = info && info.imageLinks && (info.imageLinks.thumbnail || info.imageLinks.smallThumbnail);
+  if (!link) throw new Error('表紙なし');
+  // http で返ってくることがある。edge=curl はページの折れ角の装飾なので外す。
+  return { url: link.replace(/^http:/, 'https:').replace(/&edge=curl/, ''), categories: info.categories || null };
 }
 
 // 表紙のURLを取ってきて、アップロード画像と同じように縮小した data URL にする。
@@ -1458,6 +1498,18 @@ function findSeriesForTitle(title) {
   return book ? { book, vol } : null;
 }
 
+// 読み取った巻を、確認を挟まずシリーズへ入れる。
+// 入れた結果はシリーズ画面を開いて見せ、間違いならその場で「外す」で戻せる。
+async function autoAddScannedVolume(series, vol) {
+  const added = await addVolumeRecord(series, vol);
+  if (!added) return;
+  hideDuplicateWarning();
+  closeModal('bookModal');
+  renderBooks();
+  openSeriesModal(series.id);
+  showToast(`「${series.title}」に${vol}巻を入れました`);
+}
+
 // シリーズに1巻ぶん足す（1冊のレコードとして作る）
 async function addVolumeToSeries(series, vol) {
   const added = await addVolumeRecord(series, vol);
@@ -1502,15 +1554,17 @@ function offerSeriesAction(rawTitle) {
   const hit = findSeriesForTitle(rawTitle);
   if (hit) {
     const already = seriesVolumes(hit.book.id).some((v) => v.volumeNo === hit.vol);
-    showBanner(
-      already
-        ? `<strong>${escHtml(hit.book.title)}</strong> の ${hit.vol}巻 はすでに持っています。`
-        : `<strong>${escHtml(hit.book.title)}</strong> のシリーズがあります。${hit.vol}巻を追加できます。`,
-      already ? 'シリーズを開く' : `${hit.vol}巻を追加`,
-      already
-        ? () => { hideDuplicateWarning(); openBookModal(hit.book.id); }
-        : () => addVolumeToSeries(hit.book, hit.vol)
-    );
+    if (already) {
+      showBanner(
+        `<strong>${escHtml(hit.book.title)}</strong> の ${hit.vol}巻 はすでに持っています。`,
+        'シリーズを開く',
+        () => { hideDuplicateWarning(); closeModal('bookModal'); openSeriesModal(hit.book.id); }
+      );
+      return;
+    }
+    // 作品名も巻数も一致しているので、確認を挟まずそのまま入れる。
+    // 押し間違いではなく「読み取った本を棚に入れる」だけなので、取り消せれば十分。
+    autoAddScannedVolume(hit.book, hit.vol);
     return;
   }
 
@@ -1569,21 +1623,30 @@ async function handleIsbnLookup(rawIsbn) {
     if (s.author) document.getElementById('bookAuthorInput').value = cleanAuthorName(s.author);
 
     // 棚は、読み取ったレーベル名（「ジャンプ・コミックス」等）も手がかりにして先に選んでおく
+    pendingLabelHint = s.series || null;
     if (!editingBookId) renderShelfPicker(defaultShelfIdForNewBook(s.series));
 
     // 巻数が読み取れたら、シリーズにまとめる導線を出す。
     // 同じ本が既にある（＝重複）ときは、そちらの案内を優先する。
     if (!dup) offerSeriesAction(s.title);
-    if (s.cover) {
-      // できれば表紙を端末に取り込む（縮小済みの data URL にする）。
-      // こうしておくとオフラインでも表示できるし、openBD 側のリンクが切れても残る。
-      // CORS で取り込めなかった場合だけ、URL のまま持つ（その場合オフラインでは
-      // 表示できないが、カード側で本のアイコンにフォールバックする）。
-      let cover = s.cover;
-      try { cover = await localizeCoverUrl(s.cover); } catch (e) { /* URLのまま使う */ }
+    // 表紙は openBD →（無ければ）Google Books の順に探す。
+    // できれば端末に取り込む（縮小済みの data URL）。そうすればオフラインでも見えるし、
+    // 相手側のリンクが切れても残る。取り込めなければURLのまま持つ
+    // （その場合オフラインでは出ないが、カード側で本のアイコンに落ちる）。
+    let coverUrl = s.cover || null;
+    if (!coverUrl) {
+      try {
+        const g = await fetchCoverFromGoogleBooks(isbn);
+        coverUrl = g.url;
+        if (g.categories) pendingLabelHint = (pendingLabelHint || '') + ' ' + g.categories.join(' ');
+      } catch (e) { /* 表紙は無くてもよい */ }
+    }
+    if (coverUrl) {
+      let cover = coverUrl;
+      try { cover = await localizeCoverUrl(coverUrl); } catch (e) { /* URLのまま使う */ }
       setCoverPreview(cover);
     }
-    showToast('書籍情報を取得しました');
+    showToast(coverUrl ? '書籍情報を取得しました' : '書籍情報を取得しました（表紙は見つかりませんでした）');
   } catch (err) {
     showToast('検索に失敗しました（オフラインの可能性があります）');
   }
@@ -1763,7 +1826,11 @@ document.getElementById('saveBookBtn').addEventListener('click', async () => {
   const tagsRaw = document.getElementById('bookTagsInput').value.trim();
   const tags = tagsRaw ? [...new Set(tagsRaw.split(/[,、]+/).map((t) => t.trim()).filter(Boolean))] : [];
   const shelfId = pendingShelfId || null;
-  if (shelfId) localStorage.setItem(LAST_SHELF_KEY, shelfId);
+  if (shelfId) {
+    localStorage.setItem(LAST_SHELF_KEY, shelfId);
+    // 「このレーベルはこの棚」を覚えて、次に同じレーベルを読んだとき自動で選べるようにする
+    rememberLabelShelf(pendingLabelHint, shelfId);
+  }
   const format = pendingFormat || 'paper';
   // ストアの欄は電子のときしか出していないので、紙にしたら既存値を持ち越す
   const store = (format === 'ebook' || format === 'both')
