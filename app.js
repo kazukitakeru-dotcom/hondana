@@ -7,7 +7,7 @@
 // 画面に出す版。**`sw.js` の CACHE_NAME と必ず揃えること。**
 // 「直したはずの機能が出てこない」がキャッシュのせいなのか作りのせいなのかを
 // 端末側で判別できるようにするためにある。
-const APP_VERSION = 'v18';
+const APP_VERSION = 'v19';
 
 // ── PWA Service Worker ──
 if ('serviceWorker' in navigator) {
@@ -805,19 +805,6 @@ function renderBooks() {
   updateShelfStats();
 
   const q = searchQuery.trim();
-  // 状態（未読/読了など）だけの判定。巻にも棚にも共通で使う。
-  const passesStatus = (b) => {
-    if (currentFilter === 'all') return true;
-    if (currentFilter === 'favorite') return !!b.favorite;
-    // シリーズ本体は状態を持たない（持つのは巻の方）。
-    // 本体で判定すると、5巻まで読了でもシリーズごと消えて読了の巻まで見えなくなる。
-    // 中の巻がひとつでも当てはまれば出す。
-    if (b.isSeries) {
-      const vols = seriesVolumes(b.id);
-      if (vols.length) return vols.some((v) => v.status === currentFilter);
-    }
-    return b.status === currentFilter;
-  };
   const passes = (b) => {
     let matchShelf = true;
     if (currentShelfFilter === '__none__') matchShelf = !b.shelfId || !shelfName(b.shelfId);
@@ -826,7 +813,7 @@ function renderBooks() {
     // シリーズは中の巻にも当てる（巻の題名やISBNで探してもシリーズが出るように）
     const matchQ = !q || matchesSearch(b, q)
       || (b.isSeries && seriesVolumes(b.id).some((v) => matchesSearch(v, q)));
-    return passesStatus(b) && matchShelf && matchTag && matchQ;
+    return passesStatusFilter(b) && matchShelf && matchTag && matchQ;
   };
 
   let list = books.filter((b) => {
@@ -837,21 +824,6 @@ function renderBooks() {
   });
 
   sortBookList(list);
-
-  // 開いているシリーズは、そのカードのすぐ後ろに巻を差し込む。
-  // 並び替えの編集中は順番が壊れるので差し込まない。
-  if (!showArrows) {
-    const withVolumes = [];
-    for (const b of list) {
-      withVolumes.push(b);
-      if (b.isSeries && isSeriesExpanded(b.id)) {
-        // 巻には状態の絞り込みだけをかける（「読了だけ」で開けば読んだ巻だけ並ぶ）。
-        // 棚やタグは親のシリーズで判定済みなので、巻に重ねると余計に消えてしまう。
-        withVolumes.push(...seriesVolumes(b.id).filter(passesStatus));
-      }
-    }
-    list = withVolumes;
-  }
 
   if (!list.length) {
     grid.innerHTML = '';
@@ -903,12 +875,45 @@ function renderGroupedShelves(list, showArrows) {
   return html;
 }
 
-// 本を SHELF_COLS 冊ずつの段に分け、各段の下に棚板を敷く
+// 状態（未読/読了など）だけの判定。棚にも巻にも使うので外に出してある。
+function passesStatusFilter(b) {
+  if (currentFilter === 'all') return true;
+  if (currentFilter === 'favorite') return !!b.favorite;
+  // シリーズ本体は状態を持たない（持つのは巻の方）。
+  // 本体で判定すると、5巻まで読了でもシリーズごと消えて読了の巻まで見えなくなる。
+  // 中の巻がひとつでも当てはまれば出す。
+  if (b.isSeries) {
+    const vols = seriesVolumes(b.id);
+    if (vols.length) return vols.some((v) => v.status === currentFilter);
+  }
+  return b.status === currentFilter;
+}
+
+// 開いているシリーズの巻は**横スクロールの帯**にする。
+// 3冊ずつ下に伸ばすと、100巻あれば34段になって他の本が押し流されてしまう。
+function renderVolumeStrip(series) {
+  const vols = seriesVolumes(series.id).filter(passesStatusFilter);
+  if (!vols.length) {
+    return `<div class="volume-strip-empty">この絞り込みに当てはまる巻はありません</div>`;
+  }
+  return `<div class="volume-strip-wrap">
+      <div class="volume-strip">${vols.map((v) => renderBookCard(v, false)).join('')}</div>
+      <div class="shelf-plank"></div>
+    </div>`;
+}
+
+// 本を SHELF_COLS 冊ずつの段に分け、各段の下に棚板を敷く。
+// その段に開いているシリーズがあれば、直後に巻の帯を差し込む。
 function renderShelfSection(list, showArrows) {
   let html = '';
   for (let i = 0; i < list.length; i += SHELF_COLS) {
     const row = list.slice(i, i + SHELF_COLS);
     html += `<div class="shelf-row">${row.map((b) => renderBookCard(b, showArrows)).join('')}</div><div class="shelf-plank"></div>`;
+    if (!showArrows) {
+      for (const b of row) {
+        if (b.isSeries && isSeriesExpanded(b.id)) html += renderVolumeStrip(b);
+      }
+    }
   }
   return html;
 }

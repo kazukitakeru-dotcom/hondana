@@ -223,6 +223,33 @@ input, textarea { font-family: inherit; }
   align-items: start;
 }
 
+/* 開いたシリーズの巻。横に流して見る（下に伸ばすと他の本が押し流されるため） */
+.volume-strip-wrap { margin-top: 4px; }
+
+.volume-strip {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding: 14px 6px 0;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.volume-strip::-webkit-scrollbar { display: none; }
+
+/* 3冊ぴったりではなく少しはみ出す幅にして、横に続きがあることを見せる */
+.volume-strip .book-card {
+  flex: 0 0 27%;
+  min-width: 84px;
+  scroll-snap-align: start;
+}
+
+.volume-strip-empty {
+  font-size: 12px;
+  color: rgba(255,253,249,0.75);
+  padding: 12px 8px 0;
+}
+
 /* 棚の見出し（木箱の中に貼られたラベルのイメージ） */
 .shelf-label {
   display: flex;
