@@ -661,7 +661,38 @@ document.getElementById('settingsBtn').addEventListener('click', () => {
 document.getElementById('closeSettingsBtn').addEventListener('click', () => closeModal('settingsModal'));
 
 // ── 追加ボタン ──
-document.getElementById('fabBtn').addEventListener('click', () => openBookModal(null));
+// 本1冊とシリーズは作り方も後の扱いも違うので、入口から分ける。
+// （以前はシリーズを作るのに「本を追加 → 奥のトグルを探す」必要があった）
+function toggleFabMenu(show) {
+  const menu = document.getElementById('fabMenu');
+  const open = show === undefined ? menu.classList.contains('hidden') : show;
+  menu.classList.toggle('hidden', !open);
+  document.getElementById('fabBtn').classList.toggle('open', open);
+}
+
+document.getElementById('fabBtn').addEventListener('click', () => toggleFabMenu());
+document.getElementById('fabAddBook').addEventListener('click', () => {
+  toggleFabMenu(false);
+  openBookModal(null);
+});
+document.getElementById('fabAddSeries').addEventListener('click', () => {
+  toggleFabMenu(false);
+  createSeriesFlow();
+});
+// 余白を触ったら閉じる
+document.addEventListener('click', (e) => {
+  if (e.target.closest('#fabMenu') || e.target.closest('#fabBtn')) return;
+  if (!document.getElementById('fabMenu').classList.contains('hidden')) toggleFabMenu(false);
+});
+
+// シリーズを作ってすぐ中身を開く。巻はシリーズ画面から入れる。
+async function createSeriesFlow() {
+  openBookModal(null);
+  document.getElementById('bookModalTitle').textContent = 'シリーズを追加';
+  document.getElementById('bookSeriesInput').checked = true;
+  updateModalFieldVisibility();
+  updateVolumeHint();
+}
 
 // ── 本棚の描画 ──
 // 本を3冊ずつ棚板（shelf-plank）で区切り、実際の本棚のように見せている。
@@ -932,18 +963,19 @@ function renderSeriesModal() {
     const v = owned.get(n);
     if (v) {
       const mark = v.format === 'ebook' ? '📱' : (v.format === 'both' ? '📕📱' : '');
-      cells.push(`<button class="volume-chip owned ${v.status === 'done' ? 'read' : ''}" data-vol-open="${escHtml(v.id)}">${n}${mark ? `<span class="vol-mark">${mark}</span>` : ''}</button>`);
+      const state = v.status === 'done' ? 'read' : (v.status === 'reading' ? 'reading' : '');
+      cells.push(`<button class="volume-chip owned ${state}" data-vol-open="${escHtml(v.id)}">${n}${mark ? `<span class="vol-mark">${mark}</span>` : ''}</button>`);
     } else if (n >= info.min) {
       cells.push(`<button class="volume-chip missing" data-vol-add="${n}">${n}</button>`);
     }
   }
-  document.getElementById('volumeGrid').innerHTML = cells.join('') || '<p class="form-hint">巻がありません。</p>';
+  // 持っている先の巻を足せるように末尾に＋を置く。
+  // これが無いと、5巻まで持っている状態から20巻を足す手段が無かった。
+  if (!info.complete) cells.push(`<button class="volume-chip add" data-vol-add="${(info.max || 0) + 1}" title="次の巻を追加">＋</button>`);
+  document.getElementById('volumeGrid').innerHTML = cells.join('');
 
   document.getElementById('volumeGrid').querySelectorAll('[data-vol-open]').forEach((el) => {
-    el.addEventListener('click', () => {
-      closeModal('seriesModal');
-      openBookModal(el.dataset.volOpen);
-    });
+    el.addEventListener('click', () => openVolumeSheet(el.dataset.volOpen));
   });
   document.getElementById('volumeGrid').querySelectorAll('[data-vol-add]').forEach((el) => {
     el.addEventListener('click', async () => {
@@ -1005,6 +1037,99 @@ async function absorbBookIntoSeries(bookId, vol) {
   showToast(`${vol}巻としてシリーズに入れました`);
 }
 
+// ── 1巻ぶんの軽い操作 ──
+// 巻をタップして本の編集画面（ISBN・棚・タグ・評価・メモまである）が開くのは重すぎるので、
+// よく使う「状態」と「紙/電子」と「外す」だけを出す。細かい編集はそこから辿れる。
+let openVolumeId = null;
+
+function openVolumeSheet(volumeId) {
+  const v = books.find((b) => b.id === volumeId);
+  if (!v) return;
+  openVolumeId = volumeId;
+  document.getElementById('volumeModalTitle').textContent = `${v.volumeNo}巻`;
+  document.querySelectorAll('#volumeStatusSelector .status-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.value === (v.status || 'unread'));
+  });
+  document.querySelectorAll('#volumeFormatSelector .status-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.value === (v.format || 'paper'));
+  });
+  openModal('volumeModal');
+}
+
+async function updateOpenVolume(patch) {
+  const v = books.find((b) => b.id === openVolumeId);
+  if (!v) return;
+  Object.assign(v, patch);
+  await dbPut(STORES.books, v);
+  renderSeriesModal();
+  renderBooks();
+}
+
+document.querySelectorAll('#volumeStatusSelector .status-btn').forEach((btn) => {
+  btn.addEventListener('click', async () => {
+    document.querySelectorAll('#volumeStatusSelector .status-btn').forEach((b) => b.classList.remove('active'));
+    btn.classList.add('active');
+    await updateOpenVolume({ status: btn.dataset.value });
+  });
+});
+document.querySelectorAll('#volumeFormatSelector .status-btn').forEach((btn) => {
+  btn.addEventListener('click', async () => {
+    document.querySelectorAll('#volumeFormatSelector .status-btn').forEach((b) => b.classList.remove('active'));
+    btn.classList.add('active');
+    await updateOpenVolume({ format: btn.dataset.value });
+  });
+});
+
+document.getElementById('volumeCloseBtn').addEventListener('click', () => closeModal('volumeModal'));
+document.getElementById('volumeDetailBtn').addEventListener('click', () => {
+  const id = openVolumeId;
+  closeModal('volumeModal');
+  closeModal('seriesModal');
+  openBookModal(id);
+});
+document.getElementById('volumeDeleteBtn').addEventListener('click', async () => {
+  const v = books.find((b) => b.id === openVolumeId);
+  if (!v) return;
+  const ok = await showConfirm('巻を外す', `${v.volumeNo}巻をシリーズから外して削除しますか？`, '外す');
+  if (!ok) return;
+  books = books.filter((b) => b.id !== v.id);
+  await dbDelete(STORES.books, v.id);
+  closeModal('volumeModal');
+  renderSeriesModal();
+  renderBooks();
+  showToast(`${v.volumeNo}巻を外しました`);
+});
+
+// ── まとめて操作 ──
+// 「105巻まで読んだ」を1冊ずつ設定するのは現実的でないので、まとめて変えられるようにする。
+document.getElementById('bulkReadBtn').addEventListener('click', async () => {
+  const series = books.find((b) => b.id === openSeriesId);
+  const upto = parseInt(document.getElementById('bulkReadTo').value, 10);
+  if (!series || !upto) { showToast('巻を入力してください'); return; }
+  const targets = seriesVolumes(series.id).filter((v) => v.volumeNo <= upto && v.status !== 'done');
+  if (!targets.length) { showToast('変わる巻がありません'); return; }
+  for (const v of targets) { v.status = 'done'; await dbPut(STORES.books, v); }
+  renderSeriesModal();
+  renderBooks();
+  showToast(`${upto}巻までを読了にしました（${targets.length}冊）`);
+});
+
+document.getElementById('bulkAddBtn').addEventListener('click', async () => {
+  const series = books.find((b) => b.id === openSeriesId);
+  const from = parseInt(document.getElementById('bulkAddFrom').value, 10);
+  const to = parseInt(document.getElementById('bulkAddTo').value, 10);
+  if (!series || !from || !to) { showToast('範囲を入力してください'); return; }
+  const [a, b] = from <= to ? [from, to] : [to, from];
+  if (b - a > VOLUME_MAX_SPAN) { showToast('範囲が広すぎます'); return; }
+  let added = 0;
+  for (let n = a; n <= b; n++) if (await addVolumeRecord(series, n)) added++;
+  document.getElementById('bulkAddFrom').value = '';
+  document.getElementById('bulkAddTo').value = '';
+  renderSeriesModal();
+  renderBooks();
+  showToast(added ? `${added}冊を追加しました` : 'すでにすべてあります');
+});
+
 document.getElementById('seriesCloseBtn').addEventListener('click', () => closeModal('seriesModal'));
 
 document.getElementById('seriesAddNextBtn').addEventListener('click', async () => {
@@ -1016,20 +1141,6 @@ document.getElementById('seriesAddNextBtn').addEventListener('click', async () =
   renderSeriesModal();
   renderBooks();
   showToast(`${info.next}巻を追加しました`);
-});
-
-document.getElementById('seriesAddManyBtn').addEventListener('click', async () => {
-  const series = books.find((b) => b.id === openSeriesId);
-  if (!series) return;
-  const input = prompt('追加する巻を入力してください\n例: 1-10  /  1,2,3  /  12', '');
-  if (!input) return;
-  const nums = parseVolumes(input);
-  if (!nums.length) { showToast('巻を読み取れませんでした'); return; }
-  let added = 0;
-  for (const n of nums) if (await addVolumeRecord(series, n)) added++;
-  renderSeriesModal();
-  renderBooks();
-  showToast(added ? `${added}冊を追加しました` : 'すでにすべてあります');
 });
 
 document.getElementById('seriesEditBtn').addEventListener('click', () => {
@@ -1135,11 +1246,13 @@ function updateModalFieldVisibility() {
   // ストアは電子を持っているときだけ聞く
   document.getElementById('storeFieldGroup')
     .classList.toggle('hidden', pendingFormat !== 'ebook' && pendingFormat !== 'both');
-  document.getElementById('bookmarkFieldGroup').classList.toggle('hidden', isWishlist);
+  // シリーズは入れ物なので、1冊ぶんの項目（電子栞・ISBN）は意味を持たない。
+  // 状態や紙/電子も巻ごとに持つので、入れ物側では聞かない。
+  document.getElementById('bookmarkFieldGroup').classList.toggle('hidden', isWishlist || isSeries);
   document.getElementById('ratingFieldGroup').classList.toggle('hidden', isWishlist);
-  // 価格は「これから買う本の目安」なので欲しいリストのときだけ
   document.getElementById('priceFieldGroup').classList.toggle('hidden', !isWishlist);
   document.getElementById('seriesFieldGroup').classList.toggle('hidden', !isSeries);
+  document.getElementById('isbnFieldGroup').classList.toggle('hidden', isSeries);
 }
 
 document.getElementById('bookSeriesInput').addEventListener('change', () => {
@@ -1690,6 +1803,14 @@ document.getElementById('saveBookBtn').addEventListener('click', async () => {
     };
     books.push(b);
     await dbPut(STORES.books, b);
+    if (isSeries) {
+      // 作った直後は必ず巻を入れたいので、そのまま中身を開く
+      closeModal('bookModal');
+      renderBooks();
+      openSeriesModal(b.id);
+      showToast('シリーズを作りました。巻を追加してください');
+      return;
+    }
     showToast('本を追加しました');
   }
   closeModal('bookModal');

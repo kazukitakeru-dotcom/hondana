@@ -632,6 +632,51 @@ input, textarea { font-family: inherit; }
 
 .cover-upload-area input { display: none; }
 
+/* FAB から出すメニュー（本1冊とシリーズは作り方が違うので入口を分けてある） */
+.fab-menu {
+  position: fixed;
+  right: calc(50% - 240px + 16px);
+  bottom: 92px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 200;
+  align-items: flex-end;
+}
+@media (max-width: 480px) { .fab-menu { right: 16px; } }
+
+.fab-menu-item {
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-full);
+  padding: 12px 18px;
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  box-shadow: var(--shadow-lg);
+  white-space: nowrap;
+  animation: fab-item-in .16s ease backwards;
+}
+.fab-menu-item:nth-child(2) { animation-delay: .04s; }
+@keyframes fab-item-in {
+  from { opacity: 0; transform: translateY(8px) scale(.96); }
+  to   { opacity: 1; transform: none; }
+}
+.fab.open { transform: rotate(45deg); }
+
+/* まとめて操作の行 */
+.bulk-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.bulk-row:last-child { margin-bottom: 0; }
+.bulk-num { width: 74px; flex-shrink: 0; text-align: center; }
+.bulk-label { font-size: 13px; color: var(--text-sub); flex-shrink: 0; }
+.bulk-btn { flex: 1; white-space: nowrap; }
+
 /* ── シリーズの中身 ── */
 .series-summary {
   font-size: 13px;
@@ -669,7 +714,17 @@ input, textarea { font-family: inherit; }
 }
 .volume-chip:active { transform: scale(0.94); }
 .volume-chip.owned { background: var(--primary-light); border-color: var(--primary); color: var(--primary); }
-.volume-chip.owned.read { background: var(--done-light); border-color: var(--done); color: var(--done); }
+.volume-chip.owned.read { background: var(--done); border-color: var(--done); color: #fff; }
+.volume-chip.owned.reading { background: var(--accent-light); border-color: var(--accent); color: var(--accent); }
+
+/* 先の巻を足すための＋ */
+.volume-chip.add {
+  border-style: dashed;
+  border-color: var(--primary);
+  color: var(--primary);
+  background: transparent;
+  font-size: 18px;
+}
 /* まだ持っていない巻。タップで足せる */
 .volume-chip.missing {
   border-style: dashed;

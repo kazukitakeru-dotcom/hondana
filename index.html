@@ -85,7 +85,11 @@
   </div>
 
   <!-- FAB -->
-  <button class="fab" id="fabBtn" aria-label="本を追加">
+  <div class="fab-menu hidden" id="fabMenu">
+    <button class="fab-menu-item" id="fabAddBook">📖　本を1冊追加</button>
+    <button class="fab-menu-item" id="fabAddSeries">📚　シリーズを追加</button>
+  </div>
+  <button class="fab" id="fabBtn" aria-label="追加">
     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
   </button>
 
@@ -99,7 +103,7 @@
     <div class="modal-handle"></div>
     <h2 class="modal-title" id="bookModalTitle">本を追加</h2>
 
-    <div class="form-group">
+    <div class="form-group" id="isbnFieldGroup">
       <label class="form-label">ISBNから取得（任意）</label>
       <div class="isbn-row">
         <input class="form-input" type="text" id="isbnInput" placeholder="978から始まる13桁" inputmode="numeric">
@@ -252,7 +256,22 @@
     <div class="form-group">
       <label class="form-label">持っている巻</label>
       <div class="volume-grid" id="volumeGrid"></div>
-      <p class="form-hint">数字をタップするとその巻を開けます。点線の巻はまだ持っていない巻で、タップすると追加できます。</p>
+      <p class="form-hint">数字をタップすると状態を変えられます。点線はまだ持っていない巻、＋は先の巻を足します。</p>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">まとめて操作</label>
+      <div class="bulk-row">
+        <span class="bulk-label">巻</span>
+        <input class="form-input bulk-num" type="number" id="bulkReadTo" min="1" inputmode="numeric" placeholder="10">
+        <button class="btn btn-sm btn-outline bulk-btn" id="bulkReadBtn">まで読了にする</button>
+      </div>
+      <div class="bulk-row">
+        <input class="form-input bulk-num" type="number" id="bulkAddFrom" min="1" inputmode="numeric" placeholder="1">
+        <span class="bulk-label">〜</span>
+        <input class="form-input bulk-num" type="number" id="bulkAddTo" min="1" inputmode="numeric" placeholder="10">
+        <button class="btn btn-sm btn-outline bulk-btn" id="bulkAddBtn">巻を追加</button>
+      </div>
     </div>
 
     <div class="form-group hidden" id="absorbGroup">
@@ -263,9 +282,40 @@
 
     <div class="modal-btns">
       <button class="btn btn-primary" id="seriesAddNextBtn">＋ 次の巻を追加</button>
-      <button class="btn btn-outline" id="seriesAddManyBtn">まとめて追加（1〜10 など）</button>
       <button class="btn btn-outline" id="seriesEditBtn">シリーズの設定</button>
       <button class="btn btn-outline" id="seriesCloseBtn">閉じる</button>
+    </div>
+  </div>
+</div>
+
+<!-- Volume Sheet（1巻ぶんの軽い操作。本の編集画面は重すぎるので分けてある） -->
+<div class="modal-overlay" id="volumeModal">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2 class="modal-title" id="volumeModalTitle">1巻</h2>
+
+    <div class="form-group">
+      <label class="form-label">状態</label>
+      <div class="status-selector" id="volumeStatusSelector">
+        <button class="status-btn" data-value="unread">未読</button>
+        <button class="status-btn" data-value="reading">読書中</button>
+        <button class="status-btn" data-value="done">読了</button>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label">持っている形</label>
+      <div class="status-selector" id="volumeFormatSelector">
+        <button class="status-btn" data-value="paper">📕 紙</button>
+        <button class="status-btn" data-value="ebook">📱 電子</button>
+        <button class="status-btn" data-value="both">両方</button>
+      </div>
+    </div>
+
+    <div class="modal-btns">
+      <button class="btn btn-outline" id="volumeDetailBtn">この巻を詳しく編集</button>
+      <button class="btn btn-outline" id="volumeDeleteBtn" style="color:var(--danger);border-color:var(--danger);">この巻を外す</button>
+      <button class="btn btn-outline" id="volumeCloseBtn">閉じる</button>
     </div>
   </div>
 </div>
@@ -290,24 +340,28 @@
       <div class="section-header"><span class="section-title">複数端末で同期</span></div>
       <p class="sync-status" id="sync-status">ログインしていません（この端末だけに保存されます）</p>
 
-      <div id="sync-login-form">
+      <!-- 入力欄は必ず <form> の中に置くこと。
+           iPhone / Mac のパスワード保存（iCloudキーチェーン）は submit を合図に
+           「保存しますか？」を出すので、div のままだと候補として出てこない。
+           ログインは type="submit"、それ以外のボタンは type="button" にする。 -->
+      <form id="sync-login-form" autocomplete="on" style="margin:0">
         <div class="add-tag-row mt-2">
-          <input class="form-input" type="email" id="sync-email" placeholder="メールアドレス"
+          <input class="form-input" type="email" id="sync-email" name="email" placeholder="メールアドレス"
                  autocomplete="username" inputmode="email">
         </div>
         <div class="add-tag-row mt-2">
-          <input class="form-input" type="password" id="sync-password" placeholder="パスワード（8文字以上）"
+          <input class="form-input" type="password" id="sync-password" name="password" placeholder="パスワード（8文字以上）"
                  autocomplete="current-password">
         </div>
         <div class="sync-actions mt-2">
-          <button class="btn btn-sm btn-primary" style="width:auto;" id="sync-do-login">ログイン</button>
-          <button class="btn btn-sm" style="width:auto;" id="sync-do-signup">新規登録</button>
+          <button class="btn btn-sm btn-primary" style="width:auto;" id="sync-do-login" type="submit">ログイン</button>
+          <button class="btn btn-sm" style="width:auto;" id="sync-do-signup" type="button">新規登録</button>
         </div>
         <p class="sync-hint" id="sync-login-msg"></p>
         <p class="sync-hint">
           はじめての端末では「新規登録」でアカウントを作り、2台目以降は同じメールとパスワードで「ログイン」します。
         </p>
-      </div>
+      </form>
 
       <div id="sync-logged-in" class="hidden">
         <div class="sync-actions mt-2">
