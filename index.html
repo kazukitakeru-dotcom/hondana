@@ -275,15 +275,34 @@
     </div>
 
     <div class="form-group hidden" id="absorbGroup">
-      <label class="form-label">本棚にある本を取り込む</label>
+      <label class="form-label">この本たちを入れられます</label>
       <div id="absorbList"></div>
-      <p class="form-hint">シリーズを作る前に登録していた巻を、あとからここへ入れられます。</p>
     </div>
 
     <div class="modal-btns">
       <button class="btn btn-primary" id="seriesAddNextBtn">＋ 次の巻を追加</button>
+      <button class="btn btn-outline" id="seriesPickBtn">📚 今持っている本を入れる</button>
       <button class="btn btn-outline" id="seriesEditBtn">シリーズの設定</button>
       <button class="btn btn-outline" id="seriesCloseBtn">閉じる</button>
+    </div>
+  </div>
+</div>
+
+<!-- Book Picker（棚にある本を選んでシリーズに入れる） -->
+<div class="modal-overlay" id="bookPickerModal">
+  <div class="modal">
+    <div class="modal-handle"></div>
+    <h2 class="modal-title" id="pickerTitle">シリーズに入れる本を選ぶ</h2>
+    <p class="form-hint" id="pickerHint">棚にある本を、このシリーズの巻として入れます。本は消えず、シリーズの中に移るだけです。</p>
+
+    <div class="form-group">
+      <input class="form-input" type="search" id="pickerSearch" placeholder="本を検索..." autocomplete="off">
+    </div>
+
+    <div id="pickerList"></div>
+
+    <div class="modal-btns">
+      <button class="btn btn-outline" id="pickerCloseBtn">閉じる</button>
     </div>
   </div>
 </div>

@@ -743,6 +743,46 @@ input, textarea { font-family: inherit; }
   line-height: 1;
 }
 
+/* 本を選んでシリーズに入れる画面 */
+.picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--border);
+}
+.picker-row:last-child { border-bottom: none; }
+
+.picker-info { flex: 1; min-width: 0; }
+.picker-name {
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.picker-sub { font-size: 11px; color: var(--text-muted); }
+.picker-vol {
+  width: 62px;
+  height: 38px;
+  flex-shrink: 0;
+  text-align: center;
+  padding: 0 4px;
+}
+.picker-add {
+  flex-shrink: 0;
+  height: 38px;
+  padding: 0 14px;
+  border: 1.5px solid var(--primary);
+  border-radius: var(--radius-full);
+  background: var(--primary-light);
+  color: var(--primary);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+}
+.picker-empty { font-size: 13px; color: var(--text-muted); padding: 20px 4px; text-align: center; }
+.picker-suggested { border-left: 3px solid var(--accent); padding-left: 8px; }
+
 /* 取り込み候補 */
 .absorb-row {
   display: flex;

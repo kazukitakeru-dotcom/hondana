@@ -1036,7 +1036,7 @@ async function absorbBookIntoSeries(bookId, vol) {
   await dbPut(STORES.books, book);
   renderSeriesModal();
   renderBooks();
-  showToast(`${vol}巻としてシリーズに入れました`);
+  showToast(`「${book.title}」を${vol}巻として入れました`);
 }
 
 // ── 1巻ぶんの軽い操作 ──
@@ -1131,6 +1131,82 @@ document.getElementById('bulkAddBtn').addEventListener('click', async () => {
   renderBooks();
   showToast(added ? `${added}冊を追加しました` : 'すでにすべてあります');
 });
+
+// ── 棚にある本を選んでシリーズに入れる ──
+// 題名が一致する本しか候補に出さず、しかも候補が無いと欄ごと消える作りだったので、
+// 「どうやって入れるのか分からない」状態になっていた。
+// ここでは**棚にある本を全部出す**（題名が違っても自分で選べる）。
+// 巻数は題名から推測して入れておくが、その場で直せる。
+let pickerSearch = '';
+
+function eligibleBooksForSeries(series) {
+  return books.filter((b) => !b.seriesId && !b.isSeries && b.id !== series.id);
+}
+
+function renderBookPicker() {
+  const series = books.find((b) => b.id === openSeriesId);
+  if (!series) return;
+  const list = document.getElementById('pickerList');
+  const q = pickerSearch.trim();
+  const info = seriesInfo(series);
+  const taken = new Set(info.nums);
+  const seriesKey = normalizeTitleKey(splitTitleVolume(series.title).base || series.title);
+
+  let cands = eligibleBooksForSeries(series);
+  if (q) cands = cands.filter((b) => (b.title || '').includes(q) || (b.author || '').includes(q));
+
+  // 題名がシリーズ名で始まる本を上に出す（たいていはこれを探しているので）
+  const scored = cands.map((b) => {
+    const { base, vol } = splitTitleVolume(b.title);
+    const suggested = normalizeTitleKey(base) === seriesKey;
+    return { book: b, vol: vol || null, suggested };
+  }).sort((a, b) => (b.suggested - a.suggested) || ((a.vol || 9999) - (b.vol || 9999)));
+
+  if (!scored.length) {
+    list.innerHTML = `<p class="picker-empty">${q ? '見つかりませんでした。' : '入れられる本が棚にありません。'}</p>`;
+    return;
+  }
+
+  // 巻数の初期値：題名から読めればそれ、読めなければ空いている一番小さい番号
+  let fallback = 1;
+  const nextFree = () => { while (taken.has(fallback)) fallback++; return fallback; };
+
+  list.innerHTML = scored.map(({ book, vol, suggested }) => {
+    const v = vol && !taken.has(vol) ? vol : nextFree();
+    return `<div class="picker-row ${suggested ? 'picker-suggested' : ''}">
+      <div class="picker-info">
+        <div class="picker-name">${escHtml(book.title)}</div>
+        <div class="picker-sub">${escHtml(book.author || '著者なし')}</div>
+      </div>
+      <input class="form-input picker-vol" type="number" min="1" inputmode="numeric"
+             value="${v}" data-vol-for="${escHtml(book.id)}">
+      <button class="picker-add" data-pick-book="${escHtml(book.id)}">巻として入れる</button>
+    </div>`;
+  }).join('');
+
+  list.querySelectorAll('[data-pick-book]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.pickBook;
+      const input = list.querySelector(`[data-vol-for="${CSS.escape(id)}"]`);
+      const vol = parseInt(input.value, 10);
+      if (!vol) { showToast('巻数を入れてください'); return; }
+      await absorbBookIntoSeries(id, vol);
+      renderBookPicker();
+    });
+  });
+}
+
+document.getElementById('seriesPickBtn').addEventListener('click', () => {
+  pickerSearch = '';
+  document.getElementById('pickerSearch').value = '';
+  renderBookPicker();
+  openModal('bookPickerModal');
+});
+document.getElementById('pickerSearch').addEventListener('input', (e) => {
+  pickerSearch = e.target.value;
+  renderBookPicker();
+});
+document.getElementById('pickerCloseBtn').addEventListener('click', () => closeModal('bookPickerModal'));
 
 document.getElementById('seriesCloseBtn').addEventListener('click', () => closeModal('seriesModal'));
 
