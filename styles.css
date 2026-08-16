@@ -665,6 +665,10 @@ input, textarea { font-family: inherit; }
 }
 .fab.open { transform: rotate(45deg); }
 
+/* 巻グリッドのすぐ下に置く操作 */
+.volume-actions { display: flex; gap: 8px; margin-top: 10px; }
+.vol-act { flex: 1; white-space: nowrap; padding: 0 10px; }
+
 /* まとめて操作の行 */
 .bulk-row {
   display: flex;

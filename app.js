@@ -4,11 +4,30 @@
 
 'use strict';
 
+// 画面に出す版。**`sw.js` の CACHE_NAME と必ず揃えること。**
+// 「直したはずの機能が出てこない」がキャッシュのせいなのか作りのせいなのかを
+// 端末側で判別できるようにするためにある。
+const APP_VERSION = 'v16';
+
 // ── PWA Service Worker ──
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('./sw.js').catch(() => {});
   });
+}
+
+// キャッシュを捨てて読み直す。保存データ（IndexedDB）には触らない。
+async function forceUpdate() {
+  try {
+    if ('serviceWorker' in navigator) {
+      for (const reg of await navigator.serviceWorker.getRegistrations()) await reg.unregister();
+    }
+    if (window.caches) {
+      for (const key of await caches.keys()) await caches.delete(key);
+    }
+  } catch (e) { /* 消せなくても読み直しは試す */ }
+  // 同じURLだと機種によっては読み直さないので、印を付けて開き直す
+  location.replace(location.pathname + '?u=' + Date.now());
 }
 
 // ── DB ──
@@ -657,8 +676,16 @@ document.getElementById('newShelfInput').addEventListener('keydown', (e) => {
 // ── 設定 ──
 document.getElementById('settingsBtn').addEventListener('click', () => {
   renderShelfManager();
+  document.getElementById('appVersionLabel').textContent = APP_VERSION;
   openModal('settingsModal');
   if (typeof updateSyncUI === 'function') updateSyncUI();
+});
+
+document.getElementById('forceUpdateBtn').addEventListener('click', async () => {
+  const ok = await showConfirm('最新に更新', 'アプリを最新に更新します。保存した本はそのまま残ります。', '更新する');
+  if (!ok) return;
+  showToast('更新しています…');
+  await forceUpdate();
 });
 document.getElementById('closeSettingsBtn').addEventListener('click', () => closeModal('settingsModal'));
 

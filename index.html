@@ -257,6 +257,12 @@
       <label class="form-label">持っている巻</label>
       <div class="volume-grid" id="volumeGrid"></div>
       <p class="form-hint">数字をタップすると状態を変えられます。点線はまだ持っていない巻、＋は先の巻を足します。</p>
+      <!-- 巻を足す操作は、一番下のボタン群ではなくグリッドのすぐ下に置く。
+           下に置いていたときは「どこから入れるのか分からない」と言われた。 -->
+      <div class="volume-actions">
+        <button class="btn btn-sm btn-primary vol-act" id="seriesAddNextBtn">＋ 次の巻</button>
+        <button class="btn btn-sm btn-outline vol-act" id="seriesPickBtn">📚 持っている本を入れる</button>
+      </div>
     </div>
 
     <div class="form-group">
@@ -280,8 +286,6 @@
     </div>
 
     <div class="modal-btns">
-      <button class="btn btn-primary" id="seriesAddNextBtn">＋ 次の巻を追加</button>
-      <button class="btn btn-outline" id="seriesPickBtn">📚 今持っている本を入れる</button>
       <button class="btn btn-outline" id="seriesEditBtn">シリーズの設定</button>
       <button class="btn btn-outline" id="seriesCloseBtn">閉じる</button>
     </div>
@@ -344,6 +348,17 @@
   <div class="modal">
     <div class="modal-handle"></div>
     <h2 class="modal-title">設定</h2>
+
+    <div class="settings-group">
+      <div class="section-header"><span class="section-title">アプリの更新</span></div>
+      <p class="sync-status">いまのバージョン：<strong id="appVersionLabel">-</strong></p>
+      <div class="sync-actions mt-2">
+        <button class="btn btn-sm btn-primary" style="width:auto;" id="forceUpdateBtn">最新に更新する</button>
+      </div>
+      <p class="sync-hint">
+        新しい機能が出てこないときはここを押してください。保存した本は消えません。
+      </p>
+    </div>
 
     <div class="settings-group">
       <div class="section-header"><span class="section-title">棚の管理</span></div>
